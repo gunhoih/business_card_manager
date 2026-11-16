@@ -1,7 +1,7 @@
 [project]
-name = "smartscan"
+name = "business-card-manager"
 version = "0.1.0"
-description = "Streamlit document scanning and AI-powered document analysis"
+description = "Streamlit business card scanning and contact management"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "streamlit>=1.65,<2",
@@ -14,9 +14,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-pdf = [
-    "PyMuPDF>=1.26,<2",
-]
+pdf = ["PyMuPDF>=1.26,<2"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10"]
 
 [tool.uv]
 package = false

@@ -1,23 +1,16 @@
-# Python environments and caches
 .venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
-
-# Local secrets and environment variables
 .env
 .env.*
 !.env.example
 .streamlit/secrets.toml
-
-# Editor / system files
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-
-# Local/private document data and outputs
 data/private/
 data/uploads/
 data/outputs/
