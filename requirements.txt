@@ -1,4 +1,4 @@
-# Business Card Manager - Streamlit Cloud
+# Business Card Manager - Streamlit Community Cloud
 # uv.lock 파일이 있다면 Cloud에서 해당 파일이 우선 적용됩니다.
 streamlit>=1.65,<2
 opencv-python-headless>=5.0,<6
@@ -7,3 +7,5 @@ Pillow>=12,<14
 openai>=3.30,<4
 pydantic>=2.10,<3
 streamlit-image-coordinates>=0.4.1,<0.5
+pytesseract>=0.3.13,<0.4
+python-dotenv>=1.0,<2
