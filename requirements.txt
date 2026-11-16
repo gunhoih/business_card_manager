@@ -1,0 +1,13 @@
+# SmartScan - Streamlit Community Cloud deploy dependencies
+# Keep the versions aligned with pyproject.toml.
+# If uv.lock is present, Community Cloud uses uv.lock before this file.
+streamlit>=1.65,<2
+opencv-python-headless>=5.0,<6
+numpy>=2.0,<3
+Pillow>=12,<14
+openai>=3.30,<4
+pydantic>=2.10,<3
+streamlit-image-coordinates>=0.4.1,<0.5
+
+# Optional PDF import (enable in both files if required):
+# PyMuPDF>=1.26,<2
