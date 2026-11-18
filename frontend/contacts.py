@@ -110,6 +110,8 @@ def show_contact_editor(contacts):
         phone = st.text_input("전화번호", value=selected.get("phone", ""))
         email = st.text_input("이메일", value=selected.get("email", ""))
         website = st.text_input("웹사이트", value=selected.get("website", ""))
+        fax = st.text_input("팩스", value=selected.get("fax", ""))
+        address = st.text_input("주소", value=selected.get("address", ""))
         memo = st.text_area("메모", value=selected.get("memo", ""))
         saved = st.form_submit_button("변경 사항 저장", type="primary")
 
@@ -122,6 +124,8 @@ def show_contact_editor(contacts):
             "phone": phone,
             "email": email,
             "website": website,
+            "fax": fax,
+            "address": address,
             "memo": memo,
         }
         if not any(updated[field].strip() for field in CONTACT_FIELDS):

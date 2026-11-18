@@ -1,16 +1,11 @@
-"""AI 없이 OCR 원문에서 명확한 연락처 패턴만 추출한다."""
+"""기존 연락처 패턴 추출 함수. 정규식은 classifier와 공유한다."""
 
-import re
-
+from backend.classifier.patterns import EMAIL, PHONE, WEBSITE
 from backend.contact.csv_service import CONTACT_FIELDS
-
-EMAIL = re.compile(r"(?<![\w.@])([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})(?![\w.@])")
-PHONE = re.compile(r"(?<!\d)((?:\+82[\s.-]?(?:0)?|0)(?:1[016789]|2|[3-6][1-5])[\s.-]?\d{3,4}[\s.-]?\d{4})(?!\d)")
-WEBSITE = re.compile(r"(?<!\w)(https?://[^\s,;<>]+|www\.[\w.-]+\.[A-Za-z]{2,}(?:/[^\s,;<>]*)?)", re.IGNORECASE)
 
 
 def extract_contact_candidates(raw_text):
-    """이름·직책·회사명은 추측하지 않고 사용자가 입력하도록 남겨둔다."""
+    """기존 OCR 페이지에서 쓰는 간단한 이메일·전화·URL 추출 API."""
     text = str(raw_text or "")
     fields = {key: "" for key in CONTACT_FIELDS}
 

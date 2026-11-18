@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw
 import streamlit as st
 
 from backend.contact.field_parser import extract_contact_candidates
+from backend.contact.csv_service import CONTACT_FIELDS
 from backend.ocr.service import available_languages, recognize_text
 from frontend.state import set_extraction_result
 
@@ -55,7 +56,7 @@ def show_ocr_page():
             else:
                 fields = extract_contact_candidates(result.text)
                 # 이미 수동으로 적은 값은 OCR이 찾지 못한 경우 유지한다.
-                for field in ("name", "company", "department", "position", "phone", "email", "website", "memo"):
+                for field in CONTACT_FIELDS:
                     if not fields[field]:
                         fields[field] = st.session_state.get(f"scan_{field}", "")
                 set_extraction_result(result.text, fields)
@@ -78,12 +79,14 @@ def show_ocr_page():
         text = st.session_state.scan_raw_text
         fields = extract_contact_candidates(text)
         # 수동으로 입력한 이름·회사·직책은 유지한다.
-        for field in ("name", "company", "department", "position", "memo"):
+        for field in ("name", "company", "department", "position", "fax", "address", "memo"):
             fields[field] = st.session_state.get(f"scan_{field}", "")
-        set_extraction_result(text, fields)
+        # scan_raw_text 위젯이 생성된 뒤 같은 키를 다시 대입하지 않는다.
+        for field in CONTACT_FIELDS:
+            st.session_state[f"scan_{field}"] = str(fields.get(field) or "")
         st.success("연락처 패턴을 다시 추출했습니다.")
 
-    st.caption("이름·회사·직책은 자동으로 추측하지 않습니다. '명함 인식 → 텍스트 추출 및 정보 확인' 탭에서 수정 후 연락처로 저장하세요.")
+    st.caption("이름·회사·직책은 왼쪽 '텍스트 분류' 메뉴에서 자동 추천·수동 수정할 수 있습니다. 결과를 반영한 후 연락처로 저장하세요.")
     with st.expander("텍스트 위치·신뢰도 확인"):
         lines = preview["lines"]
         if lines:

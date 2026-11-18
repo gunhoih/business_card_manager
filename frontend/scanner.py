@@ -244,6 +244,8 @@ def show_extraction_page():
             phone = st.text_input("전화번호", key="scan_phone")
             email = st.text_input("이메일", key="scan_email")
             website = st.text_input("웹사이트", key="scan_website")
+            fax = st.text_input("팩스", key="scan_fax")
+            address = st.text_input("주소", key="scan_address")
             memo = st.text_area("메모", key="scan_memo", height=80)
 
             submitted = st.form_submit_button("연락처 목록에 추가", type="primary", width="stretch")
@@ -257,6 +259,8 @@ def show_extraction_page():
                 "phone": phone,
                 "email": email,
                 "website": website,
+                "fax": fax,
+                "address": address,
                 "memo": memo,
             }
             if not any(contact[field].strip() for field in CONTACT_FIELDS):
