@@ -30,16 +30,21 @@ def main():
     init_state()
 
     st.sidebar.title("Business Card Manager")
-    st.sidebar.caption("명함 스캔 · OCR · 텍스트 분류 · 연락처 · 챗봇")
+    st.sidebar.caption("명함 이미지 → 연락처 데이터 추출")
 
-    pages = [
-        st.Page(show_scanner, title="명함 인식", icon="📷", url_path="scanner", default=True),
-        st.Page(show_batch_scanner, title="폴더 일괄 스캔", icon="📁", url_path="batch-scanner"),
-        st.Page(show_ocr_page, title="OCR 텍스트 인식", icon="🔤", url_path="ocr"),
-        st.Page(show_classifier_page, title="텍스트 분류", icon="🏷️", url_path="classifier"),
-        st.Page(show_contacts, title="연락처 관리", icon="📇", url_path="contacts"),
-        st.Page(show_chat_page, title="명함 챗봇", icon="💬", url_path="chat"),
-    ]
+    # 핵심 기능을 먼저 보여주고 기존 단일 스캔/검증 도구는 별도 구역에 둔다.
+    pages = {
+        "기본": [
+            st.Page(show_batch_scanner, title="명함 데이터 추출", icon="📋", url_path="batch-scanner", default=True),
+            st.Page(show_contacts, title="연락처 관리", icon="📇", url_path="contacts"),
+        ],
+        "상세 도구": [
+            st.Page(show_scanner, title="개별 명함 스캔", icon="📷", url_path="scanner"),
+            st.Page(show_ocr_page, title="OCR 텍스트 인식", icon="🔤", url_path="ocr"),
+            st.Page(show_classifier_page, title="텍스트 분류", icon="🏷️", url_path="classifier"),
+            st.Page(show_chat_page, title="명함 챗봇", icon="💬", url_path="chat"),
+        ],
+    }
 
     page = st.navigation(pages)
 

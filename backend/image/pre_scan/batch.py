@@ -109,6 +109,11 @@ def scan_one(name: str, raw: bytes) -> dict:
         "click_version": 0,
         "manual_mode": False,
         "ocr": None,
+        "ocr_error": None,
+        "fields": {field: "" for field in CONTACT_FIELDS},
+        "manual_fields": [],
+        "reviewed": False,
+        "field_revision": 0,
     }
 
     try:
@@ -178,6 +183,75 @@ def apply_manual_scan(record: dict, points: list[tuple[int, int]]) -> None:
     record["manual_mode"] = False
     record["ocr"] = None
     record["ocr_error"] = None
+    # 새 스캔에 맞지 않는 기존 자동 인식값은 제거한다. 수동 수정값만 남긴다.
+    manual = set(record.get("manual_fields", []))
+    previous = record.get("fields", {})
+    record["fields"] = {
+        field: str(previous.get(field) or "") if field in manual else ""
+        for field in CONTACT_FIELDS
+    }
+    record["reviewed"] = False
+    record["field_revision"] = record.get("field_revision", 0) + 1
+
+
+def ensure_record_fields(record: dict) -> None:
+    """이전 일괄 스캔 세션의 OCR 결과도 새 데이터 표에 표시한다."""
+    if "fields" not in record:
+        recognized = (record.get("ocr") or {}).get("fields") or {}
+        record["fields"] = {field: str(recognized.get(field) or "") for field in CONTACT_FIELDS}
+    record.setdefault("manual_fields", [])
+    record.setdefault("reviewed", False)
+    record.setdefault("field_revision", 0)
+    record.setdefault("ocr_error", None)
+
+
+def apply_ocr_result(record: dict, result: dict) -> None:
+    """인식된 필드를 반영하되 사용자가 수정한 항목은 덮어쓰지 않는다."""
+    old_values = record.get("fields", {})
+    manual = set(record.get("manual_fields", []))
+    recognized = result.get("fields") or {}
+    record["fields"] = {
+        field: str(old_values.get(field) or "") if field in manual
+        else str(recognized.get(field) or "")
+        for field in CONTACT_FIELDS
+    }
+    record["ocr"] = result
+    record["ocr_error"] = None
+    record["reviewed"] = False
+    record["field_revision"] = record.get("field_revision", 0) + 1
+
+
+def update_record_fields(record: dict, values: dict) -> bool:
+    """표에서 수정한 필드를 저장하고 사용자가 검토한 항목을 추적한다."""
+    before = record.get("fields", {})
+    updated = {field: str(values.get(field) or "") for field in CONTACT_FIELDS}
+    changed = [field for field in CONTACT_FIELDS if updated[field] != str(before.get(field) or "")]
+    if not changed:
+        return False
+    record["fields"] = updated
+    record["manual_fields"] = sorted(set(record.get("manual_fields", [])) | set(changed))
+    record["reviewed"] = False
+    return True
+
+
+def export_dataset_csv(records: list[dict]) -> bytes:
+    """명함 한 장을 CSV 한 행으로 변환한다. 사람이 수정한 값이 최우선이다."""
+    buffer = io.StringIO(newline="")
+    columns = ["source_file", "scan_status", "ocr_status", "reviewed", *CONTACT_FIELDS]
+    writer = csv.DictWriter(buffer, fieldnames=columns)
+    writer.writeheader()
+    for record in records:
+        values = record.get("fields") or (record.get("ocr") or {}).get("fields") or {}
+        ocr_status = "done" if record.get("ocr") else "error" if record.get("ocr_error") else "not_run"
+        row = {
+            "source_file": record.get("name", ""),
+            "scan_status": record.get("status", ""),
+            "ocr_status": ocr_status,
+            "reviewed": "yes" if record.get("reviewed") else "no",
+            **{field: values.get(field, "") for field in CONTACT_FIELDS},
+        }
+        writer.writerow({column: safe_csv_value(row.get(column, "")) for column in columns})
+    return buffer.getvalue().encode("utf-8-sig")
 
 
 def status_counts(records: list[dict]) -> dict[str, int]:
@@ -208,7 +282,11 @@ def export_scans_zip(records: list[dict]) -> bytes:
                 archive.writestr(output_name, item["scanned_bytes"])
             if item.get("ocr"):
                 archive.writestr(f"ocr/{prefix}.txt", str(item["ocr"].get("text") or ""))
-                ocr_rows.append({"source_file": item["name"], **item["ocr"].get("fields", {})})
+                values = item.get("fields")
+                if values is None or (not any(values.values()) and not item.get("manual_fields")):
+                    # 기존 OCR 구조를 직접 구성한 호출자도 계속 지원한다.
+                    values = item["ocr"].get("fields") or {}
+                ocr_rows.append({"source_file": item["name"], **values})
             manifest.append({
                 "source_file": item["name"],
                 "status": item["status"],
