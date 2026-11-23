@@ -3,13 +3,13 @@
 import hashlib
 import io
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 import streamlit as st
 
-from backend.contact.field_parser import extract_contact_candidates
-from backend.contact.csv_service import CONTACT_FIELDS
-from backend.ocr.service import available_languages, recognize_text
-from frontend.state import set_extraction_result
+from backend.classifier.service import build_contact_fields, classify_text
+from backend.ocr.service import available_languages
+from frontend.ocr_flow import recognize_and_apply
+from frontend.state import apply_auto_fields, next_ocr_revision
 
 
 LANGUAGE_OPTIONS = {
@@ -29,7 +29,7 @@ def show_ocr_page():
 
     source_id = hashlib.sha256(image_bytes).hexdigest()
     with Image.open(io.BytesIO(image_bytes)) as source:
-        image = source.convert("RGB")
+        image = ImageOps.exif_transpose(source).convert("RGB")
 
     left, right = st.columns([1.1, 1], gap="large")
     with left:
@@ -49,23 +49,16 @@ def show_ocr_page():
 
         if st.button("Tesseract로 문자 인식", type="primary", width="stretch"):
             try:
-                with st.spinner("이미지에서 글자를 읽고 있습니다..."):
-                    result = recognize_text(image, languages=LANGUAGE_OPTIONS[language_label], psm=psm)
+                with st.spinner("이미지에서 글자를 읽고 분류하고 있습니다..."):
+                    report = recognize_and_apply(
+                        image_bytes, languages=LANGUAGE_OPTIONS[language_label], psm=psm
+                    )
             except (RuntimeError, ValueError) as error:
                 st.error(str(error))
             else:
-                fields = extract_contact_candidates(result.text)
-                # 이미 수동으로 적은 값은 OCR이 찾지 못한 경우 유지한다.
-                for field in CONTACT_FIELDS:
-                    if not fields[field]:
-                        fields[field] = st.session_state.get(f"scan_{field}", "")
-                set_extraction_result(result.text, fields)
-                st.session_state["ocr_preview"] = {
-                    "image_id": source_id,
-                    "lines": [line.__dict__ for line in result.lines],
-                    "languages": result.languages,
-                }
-                st.success(f"{len(result.lines)}개 텍스트 줄을 인식했습니다. 이메일·전화번호·웹사이트 후보를 기존 입력 폼에도 반영했습니다.")
+                st.success(f"{len(report['lines'])}개 텍스트 줄을 인식해 자동 분류했습니다. '텍스트 분류'에서 직접 수정할 수 있습니다.")
+                for warning in report["warnings"]:
+                    st.warning(warning)
 
     preview = st.session_state.get("ocr_preview")
     if not preview or preview.get("image_id") != source_id:
@@ -75,16 +68,17 @@ def show_ocr_page():
     st.subheader("인식된 텍스트")
     st.text_area("OCR 원문 · 필요하면 수정하세요", key="scan_raw_text", height=220)
 
-    if st.button("수정한 원문에서 연락처 패턴 다시 추출"):
+    if st.button("수정한 원문에서 자동 분류 다시 실행"):
         text = st.session_state.scan_raw_text
-        fields = extract_contact_candidates(text)
-        # 수동으로 입력한 이름·회사·직책은 유지한다.
-        for field in ("name", "company", "department", "position", "fax", "address", "memo"):
-            fields[field] = st.session_state.get(f"scan_{field}", "")
-        # scan_raw_text 위젯이 생성된 뒤 같은 키를 다시 대입하지 않는다.
-        for field in CONTACT_FIELDS:
-            st.session_state[f"scan_{field}"] = str(fields.get(field) or "")
-        st.success("연락처 패턴을 다시 추출했습니다.")
+        rows = classify_text(text)
+        suggestions, warnings = build_contact_fields(rows)
+        # 기존 자동 후보는 새 분류 결과로 갱신한다. 수동 입력·빈 값은 보호한다.
+        # OCR 원문 위젯은 이미 만들어졌으므로 scan_raw_text는 여기서 변경하지 않는다.
+        apply_auto_fields(suggestions)
+        preview["revision"] = next_ocr_revision()
+        st.success("수정한 원문을 다시 분류했습니다. '텍스트 분류' 메뉴에서 세부 항목을 검토하세요.")
+        for warning in warnings:
+            st.warning(warning)
 
     st.caption("이름·회사·직책은 왼쪽 '텍스트 분류' 메뉴에서 자동 추천·수동 수정할 수 있습니다. 결과를 반영한 후 연락처로 저장하세요.")
     with st.expander("텍스트 위치·신뢰도 확인"):

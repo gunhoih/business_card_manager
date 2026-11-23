@@ -26,15 +26,15 @@
 - **명함 챗봇**: 현재 명함 또는 선택한 연락처 한 명에 대해 질문 (OpenAI API 키 필요)
 
 ## 설치
-'''setup.cmd'''
+```powershell
+.\setup.cmd
+```
 
 ## 실행
-
 Windows PowerShell에서는 다음을 실행합니다.
 
 ```powershell
-.\setup.ps1
-uv run streamlit run app.py
+.\run.cmd
 ```
 
 `setup.ps1`은 `uv sync`, Tesseract 실행 엔진 설치/확인, `eng`·`kor`·`chi_tra` OCR 언어 모델 다운로드/확인을 진행합니다. Tesseract는 `uv`로 설치하는 Python 패키지가 아닌 시스템 프로그램입니다. 자세한 설치·Cloud 배포 가이드는 **[README_OCR_CHAT.md](README_OCR_CHAT.md)** 를 확인하세요.

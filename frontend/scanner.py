@@ -7,12 +7,16 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 
 from backend.contact.csv_service import CONTACT_FIELDS
 from backend.image.scan_service import scan_auto_image, scan_manual_image
+from backend.ocr.service import available_languages
+from frontend.ocr_flow import recognize_and_apply
 from frontend.state import (
     add_contact,
     clear_scan_image,
     clear_scan_result,
     reset_scan_points,
     set_scan_image,
+    set_scan_result,
+    mark_field_manual,
 )
 
 
@@ -134,8 +138,7 @@ def show_manual_scan(image):
         except ValueError as error:
             st.error(str(error))
         else:
-            st.session_state.scan_result_bytes = result
-            st.session_state.scan_result_mode = "수동 호모그래피"
+            set_scan_result(result, "수동 호모그래피")
             st.success("선택한 영역을 정면 이미지로 보정했습니다.")
 
 
@@ -152,8 +155,7 @@ def show_auto_scan(image):
             if result is None:
                 st.warning("명함 영역을 찾지 못했습니다. '수동 모서리 선택'을 이용해 주세요.")
             else:
-                st.session_state.scan_result_bytes = result
-                st.session_state.scan_result_mode = "자동 명함 탐지"
+                set_scan_result(result, "자동 명함 탐지")
                 st.success("명함 영역을 자동으로 감지하고 보정했습니다.")
 
 
@@ -206,7 +208,7 @@ def show_scan_page():
 
 def show_extraction_page():
     st.subheader("2. 명함 정보 추출")
-    st.caption("OpenAI Vision으로 인식된 값을 이곳에 표시할 예정입니다. 현재는 수동으로 입력해 화면과 CSV 저장 흐름을 테스트할 수 있습니다.")
+    st.caption("로컬 Tesseract OCR로 문자를 인식하고 규칙 기반 분류기로 연락처 후보를 채웁니다. 외부 AI API는 호출하지 않습니다.")
 
     left, right = st.columns([1, 1.3], gap="large")
 
@@ -218,37 +220,79 @@ def show_extraction_page():
         else:
             st.info("스캔 탭에서 명함 이미지를 업로드해 주세요.")
 
-        st.button(
-            "AI 텍스트 인식 및 구조화",
+        language_options = {
+            "한국어 + 영어": "kor+eng",
+            "한국어 + 영어 + 한자": "kor+eng+chi_tra",
+        }
+        selected_language = st.selectbox(
+            "로컬 OCR 인식 언어", list(language_options), key="scanner_ocr_language"
+        )
+        if st.button(
+            "로컬 OCR 인식 + 자동 분류",
             type="primary",
             width="stretch",
-            disabled=True,
-            help="OpenAI 추출 백엔드 연결 후 활성화됩니다.",
-        )
-        st.caption("미연결: API 호출은 발생하지 않으며 비용도 청구되지 않습니다.")
+            disabled=not image_bytes,
+            help="Tesseract OCR과 로컬 텍스트 분류기를 순서대로 실행합니다.",
+        ):
+            try:
+                with st.spinner("명함 글자를 인식하고 항목을 분류하고 있습니다..."):
+                    report = recognize_and_apply(
+                        image_bytes, languages=language_options[selected_language], psm=11
+                    )
+            except (ValueError, RuntimeError) as error:
+                st.error(str(error))
+                st.info("Tesseract 설치 문제가 있다면 프로젝트 루트에서 setup.cmd를 실행해 주세요.")
+            else:
+                st.success(f"OCR {len(report['lines'])}줄 인식 및 자동 분류 완료")
+                st.caption("아래 필드를 확인하고, 상세 분류·수정은 왼쪽 '텍스트 분류' 메뉴에서 진행하세요.")
+                for warning in report["warnings"]:
+                    st.warning(warning)
+
+        with st.expander("로컬 OCR 설치 상태 확인"):
+            if st.button("Tesseract 엔진·언어 모델 확인", key="scanner_check_ocr"):
+                try:
+                    installed = available_languages()
+                    st.success("Tesseract 실행 가능 · 언어 모델: " + ", ".join(
+                        lang for lang in ("eng", "kor", "chi_tra") if lang in installed
+                    ))
+                except RuntimeError as error:
+                    st.error(str(error))
+            st.caption("Windows에서는 setup.cmd로 엔진·kor/eng/chi_tra 모델을 설치/검증합니다.")
         st.text_area("OCR 원문", key="scan_raw_text", height=140, placeholder="추후 OCR 원문을 보여줍니다. 직접 입력해도 됩니다.")
 
     with right:
         st.markdown("**구조화된 연락처 정보**")
-        st.caption("필드를 수정한 뒤 임시 연락처 목록에 추가할 수 있습니다.")
+        st.caption("자동 인식한 값을 수정하면 다음 OCR에서도 보존됩니다. 연락처에 저장한 뒤에도 현재 입력값은 유지됩니다.")
 
-        with st.form("scan_contact_form", clear_on_submit=True):
-            name = st.text_input("이름", key="scan_name", placeholder="예: 홍길동")
-            company = st.text_input("회사·소속", key="scan_company", placeholder="예: ABC 테크놀로지")
-            col1, col2 = st.columns(2)
-            with col1:
-                department = st.text_input("부서", key="scan_department")
-            with col2:
-                position = st.text_input("직책", key="scan_position")
+        # 입력을 폼 바깥에 배치한다. Streamlit form 내부의 미제출 편집값은
+        # OCR 버튼을 눌렀을 때 서버에 반영되지 않을 수 있기 때문이다.
+        # 각 필드의 on_change로 자동값과 사용자가 수정한 값을 구분한다.
+        name = st.text_input("이름", key="scan_name", placeholder="예: 홍길동",
+                             on_change=mark_field_manual, args=("name",))
+        company = st.text_input("회사·소속", key="scan_company", placeholder="예: ABC 테크놀로지",
+                                on_change=mark_field_manual, args=("company",))
+        col1, col2 = st.columns(2)
+        with col1:
+            department = st.text_input("부서", key="scan_department",
+                                       on_change=mark_field_manual, args=("department",))
+        with col2:
+            position = st.text_input("직책", key="scan_position",
+                                     on_change=mark_field_manual, args=("position",))
 
-            phone = st.text_input("전화번호", key="scan_phone")
-            email = st.text_input("이메일", key="scan_email")
-            website = st.text_input("웹사이트", key="scan_website")
-            fax = st.text_input("팩스", key="scan_fax")
-            address = st.text_input("주소", key="scan_address")
-            memo = st.text_area("메모", key="scan_memo", height=80)
+        phone = st.text_input("전화번호", key="scan_phone",
+                              on_change=mark_field_manual, args=("phone",))
+        email = st.text_input("이메일", key="scan_email",
+                              on_change=mark_field_manual, args=("email",))
+        website = st.text_input("웹사이트", key="scan_website",
+                                on_change=mark_field_manual, args=("website",))
+        fax = st.text_input("팩스", key="scan_fax",
+                            on_change=mark_field_manual, args=("fax",))
+        address = st.text_input("주소", key="scan_address",
+                                on_change=mark_field_manual, args=("address",))
+        memo = st.text_area("메모", key="scan_memo", height=80,
+                            on_change=mark_field_manual, args=("memo",))
 
-            submitted = st.form_submit_button("연락처 목록에 추가", type="primary", width="stretch")
+        submitted = st.button("연락처 목록에 추가", type="primary", width="stretch")
 
         if submitted:
             contact = {
@@ -272,8 +316,8 @@ def show_extraction_page():
 
 def show_scanner():
     st.title("명함 인식")
-    st.write("명함 이미지를 스캔하고, AI 추출 결과를 확인한 다음 연락처 목록에 저장합니다.")
-    st.info("OpenCV 수동·자동 스캔과 CSV 저장을 지원합니다. AI 정보 추출은 다음 단계에서 연결합니다.")
+    st.write("명함 이미지를 스캔한 뒤 로컬 OCR로 글자를 인식하고 연락처를 정리합니다.")
+    st.info("OpenCV 보정 → Tesseract 로컬 OCR → 자동 분류 → 수동 확인 및 CSV 저장")
 
     scan_tab, extraction_tab = st.tabs(["📐 스캔 및 이미지 보정", "📝 텍스트 추출 및 정보 확인"])
     with scan_tab:

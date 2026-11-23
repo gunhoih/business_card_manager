@@ -5,8 +5,7 @@ import hashlib
 import streamlit as st
 
 from backend.classifier.service import FIELD_NAMES, build_contact_fields, classify_lines, classify_text
-from backend.contact.csv_service import CONTACT_FIELDS
-from frontend.state import set_extraction_result
+from frontend.state import apply_reviewed_fields
 
 
 def _current_ocr_preview():
@@ -20,18 +19,44 @@ def _current_ocr_preview():
     return preview
 
 
+def _make_source_key(preview, raw_text):
+    """선택한 이미지, OCR 실행 번호, 사용자가 수정한 원문을 모두 식별한다."""
+    image_id = st.session_state.get("scan_image_id", "")
+    preview_id = preview["image_id"] if preview else "no_ocr"
+    revision = int(preview.get("revision") or 0) if preview else 0
+    fingerprint = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    return f"{image_id}:{preview_id}:{revision}:{fingerprint}"
+
+
 def _initialize_input():
     """OCR 실행/이미지 변경 시 입력을 갱신하고, 사용자의 편집은 유지한다."""
     preview = _current_ocr_preview()
-    image_id = st.session_state.get("scan_image_id", "")
-    preview_id = preview["image_id"] if preview else "no_ocr"
-    source_key = f"{image_id}:{preview_id}"
+    # OCR 원문을 다른 페이지에서 수정해도 재방문 시 새 후보로 자동 동기화한다.
+    # 분류 페이지에서만 수정한 classifier_input은 원문이 바뀌지 않는 한 보존한다.
+    source_key = _make_source_key(preview, st.session_state.get("scan_raw_text", ""))
 
     if st.session_state.get("classifier_source_key") != source_key:
         st.session_state["classifier_source_key"] = source_key
-        st.session_state["classifier_input"] = st.session_state.get("scan_raw_text", "")
-        st.session_state["classifier_rows"] = []
-        st.session_state["classifier_analyzed_text"] = ""
+        text = st.session_state.get("scan_raw_text", "")
+        st.session_state["classifier_input"] = text
+
+        # OCR이 방금 완료됐다면 텍스트 분류 페이지에서 자동으로 후보를 보여준다.
+        # OCR 원문이 수정됐다면 더 이상 원본 좌표를 적용하지 않는다.
+        original = (
+            preview.get("source_text") or "\n".join(
+                line.get("text", "") for line in preview["lines"]
+            )
+        ) if preview else ""
+        uses_geometry = bool(preview and text.strip() == original.strip())
+        if text.strip():
+            rows = classify_lines(preview["lines"]) if uses_geometry else classify_text(text)
+        else:
+            rows = []
+
+        st.session_state["classifier_rows"] = rows
+        st.session_state["classifier_used_ocr_geometry"] = uses_geometry
+        st.session_state["classifier_analyzed_text"] = text
+        st.session_state["classifier_mode"] = "auto"
         st.session_state["classifier_revision"] = st.session_state.get("classifier_revision", 0) + 1
         st.session_state.pop("classifier_last_result", None)
     return preview
@@ -116,14 +141,16 @@ def _classification_form():
             updated.append(new)
 
         found, warnings = build_contact_fields(updated)
-        # 분류되지 않은 필드는 기존 수동 입력값을 지우지 않는다.
-        merged = {field: st.session_state.get(f"scan_{field}", "") for field in CONTACT_FIELDS}
-        for field, value in found.items():
-            if value:
-                merged[field] = value
+        # 선택해서 반영한 값은 직접 확인한 값으로 기록한다.
+        # 이전 자동 후보 중 이번에 제외된 값은 제거하며 수동값은 유지한다.
+        apply_reviewed_fields(found)
 
         raw_text = st.session_state["classifier_input"]
-        set_extraction_result(raw_text, merged)
+        st.session_state["scan_raw_text"] = raw_text
+        # 방금 저장한 원문과 연결 키를 동기화한다. 다음 rerun에서 편집 결과가
+        # 원문 변경으로 잘못 인식되어 초기화되는 것을 막는다.
+        preview = _current_ocr_preview()
+        st.session_state["classifier_source_key"] = _make_source_key(preview, raw_text)
         st.session_state["classifier_rows"] = updated
         st.session_state["classifier_last_result"] = {"found": found, "warnings": warnings}
         st.success("분류 결과를 '명함 인식 → 텍스트 추출 및 정보 확인' 입력 폼에 반영했습니다.")
