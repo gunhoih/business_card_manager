@@ -1,6 +1,7 @@
 import streamlit as st
 
 from backend.contact.csv_service import CONTACT_FIELDS
+from frontend.batch_scanner import show_batch_scanner
 from frontend.chat_page import show_chat_page
 from frontend.classifier_page import show_classifier_page
 from frontend.contacts import show_contacts
@@ -33,6 +34,7 @@ def main():
 
     pages = [
         st.Page(show_scanner, title="명함 인식", icon="📷", url_path="scanner", default=True),
+        st.Page(show_batch_scanner, title="폴더 일괄 스캔", icon="📁", url_path="batch-scanner"),
         st.Page(show_ocr_page, title="OCR 텍스트 인식", icon="🔤", url_path="ocr"),
         st.Page(show_classifier_page, title="텍스트 분류", icon="🏷️", url_path="classifier"),
         st.Page(show_contacts, title="연락처 관리", icon="📇", url_path="contacts"),
