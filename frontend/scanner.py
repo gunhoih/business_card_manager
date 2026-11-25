@@ -5,12 +5,12 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-from backend.contact.csv_service import CONTACT_FIELDS
+from backend.card_storage.schema import CONTACT_FIELDS
 from backend.image.scan_service import scan_auto_image, scan_manual_image
 from backend.ocr.service import available_languages
 from frontend.ocr_flow import recognize_and_apply
+from frontend.storage_ui import save_and_report
 from frontend.state import (
-    add_contact,
     clear_scan_image,
     clear_scan_result,
     reset_scan_points,
@@ -292,7 +292,8 @@ def show_extraction_page():
         memo = st.text_area("메모", key="scan_memo", height=80,
                             on_change=mark_field_manual, args=("memo",))
 
-        submitted = st.button("연락처 목록에 추가", type="primary", width="stretch")
+        st.caption("전화번호 또는 이메일이 일치하면 기존 연락처를 갱신합니다.")
+        submitted = st.button("연락처 목록에 저장", type="primary", width="stretch")
 
         if submitted:
             contact = {
@@ -307,11 +308,7 @@ def show_extraction_page():
                 "address": address,
                 "memo": memo,
             }
-            if not any(contact[field].strip() for field in CONTACT_FIELDS):
-                st.warning("저장할 정보를 하나 이상 입력해 주세요.")
-            else:
-                add_contact(contact)
-                st.success("임시 연락처 목록에 추가했습니다. '연락처 관리' 페이지에서 확인하고 CSV로 내려받을 수 있습니다.")
+            save_and_report([contact])
 
 
 def show_scanner():

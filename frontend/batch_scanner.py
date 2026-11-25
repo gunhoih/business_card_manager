@@ -7,12 +7,14 @@ import streamlit as st
 from PIL import ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-from backend.contact.csv_service import CONTACT_FIELDS, FIELD_LABELS
+from backend.card_storage.schema import CONTACT_FIELDS, FIELD_LABELS, MAX_CONTACTS
+from backend.card_storage.service import save_contacts
+from backend.card_storage.csv_service import export_dataset_csv
+from frontend.storage_ui import show_save_result
 from backend.image.pre_scan.batch import (
     apply_manual_scan,
     apply_ocr_result,
     ensure_record_fields,
-    export_dataset_csv,
     image_from_bytes,
     input_signature,
     process_folder,
@@ -46,6 +48,17 @@ def _clear_batch():
         st.session_state.pop(key, None)
     _clear_editor_keys()
     st.session_state["batch_picker_version"] = st.session_state.get("batch_picker_version", 0) + 1
+
+
+
+def _save_records_to_contacts(records):
+    """최종 수정값을 공통 저장 모듈에 넘긴다."""
+    rows = []
+    for record in records:
+        ensure_record_fields(record)
+        rows.append({**record["fields"], "source_file": record.get("name", "")})
+    contacts = st.session_state.setdefault("contacts", [])
+    return save_contacts(contacts, rows, max_contacts=MAX_CONTACTS)
 
 
 def _run_ocr_one(record):
@@ -357,13 +370,23 @@ def show_batch_scanner():
         for record in visible[start:start + PAGE_SIZE]:
             _show_record(record, indexed_records[id(record)])
 
-    st.download_button(
-        "추출 데이터 CSV 다운로드",
-        data=export_dataset_csv(records),
-        file_name="business_cards_dataset.csv",
-        mime="text/csv",
-        type="primary",
-        width="stretch",
-        on_click="ignore",
-    )
-    st.caption("CSV에는 파일명과 처리 상태, 검토 여부, 각 명함의 최종 수정값이 한 행씩 저장됩니다.")
+    st.divider()
+    st.caption("셀 수정 후 Enter로 확정하세요. 전화번호 또는 이메일이 일치하면 갱신하고, 일치하지 않으면 신규 등록합니다. 식별 정보가 없으면 CSV로만 내보낼 수 있습니다.")
+    save_col, csv_col = st.columns(2, gap="medium")
+    with save_col:
+        if st.button("연락처 목록에 저장", type="primary", width="stretch", key="batch_save_contacts"):
+            results = _save_records_to_contacts(records)
+            show_save_result(results, ui=st)
+    with csv_col:
+        st.download_button(
+            "추출 데이터 CSV 다운로드",
+            data=export_dataset_csv(records),
+            file_name="business_cards_dataset.csv",
+            mime="text/csv",
+            type="secondary",
+            width="stretch",
+            on_click="ignore",
+            key="batch_download_csv",
+        )
+    st.caption("CSV는 명함 한 장당 한 행이며 파일명·처리 상태·검토 여부·최종 수정값을 포함합니다. "
+               "연락처 목록은 현재 웹 세션에만 저장되므로 연락처 관리 화면에서도 CSV를 내려받아 보관하세요.")

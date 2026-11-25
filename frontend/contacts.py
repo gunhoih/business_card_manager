@@ -1,13 +1,10 @@
 import streamlit as st
 
-from backend.contact.csv_service import (
-    CONTACT_FIELDS,
-    FIELD_LABELS,
-    export_contacts_csv,
-    import_contacts_csv,
-    filter_new_contacts,
-)
-from frontend.state import add_contact, delete_contact, update_contact
+from backend.card_storage.schema import CONTACT_FIELDS, FIELD_LABELS
+from backend.card_storage.csv_service import export_contacts_csv, import_contacts_csv
+from backend.card_storage.service import save_contacts
+from frontend.state import delete_contact, update_contact
+from frontend.storage_ui import show_save_result
 
 
 def show_csv_tools():
@@ -34,6 +31,7 @@ def show_csv_tools():
             st.markdown("**CSV에서 가져오기**")
             uploaded = st.file_uploader("연락처 CSV 선택", type=["csv"], key="contacts_csv")
             st.caption("UTF-8 CSV · 최대 2MB / 2,000개 연락처")
+            st.caption("전화번호 또는 이메일이 일치하면 갱신하고, 일치하는 연락처가 없으면 신규 등록합니다. 식별 정보가 없으면 저장을 보류합니다.")
 
             if uploaded is not None:
                 try:
@@ -49,11 +47,11 @@ def show_csv_tools():
                         ]
                         st.dataframe(preview, hide_index=True, width="stretch")
 
-                    if st.button("CSV 연락처 추가", disabled=not rows, type="primary", width="stretch"):
-                        new_rows, skipped = filter_new_contacts(rows, st.session_state.contacts)
-                        for row in new_rows:
-                            add_contact(row)
-                        st.success(f"{len(new_rows)}개를 추가했습니다. 중복된 {skipped}개는 건너뛰었습니다.")
+                    if st.button("CSV 연락처 저장", disabled=not rows, type="primary", width="stretch"):
+                        result = save_contacts(st.session_state.contacts, rows)
+                        # 이전 목록으로 생성된 다운로드 버튼을 새 목록으로 갱신한다.
+                        st.session_state["contacts_save_result"] = result
+                        st.rerun()
 
 
 def show_contact_table():
@@ -69,7 +67,7 @@ def show_contact_table():
         ]
 
     if not contacts:
-        st.info("일치하는 연락처가 없습니다. '명함 인식'에서 정보를 입력하거나 CSV 파일을 가져오세요.")
+        st.info("일치하는 연락처가 없습니다. '명함 데이터 추출'에서 저장하거나 CSV 파일을 가져오세요.")
         return []
 
     visible_fields = ["name", "company", "department", "position", "phone", "email"]
@@ -128,11 +126,14 @@ def show_contact_editor(contacts):
             "address": address,
             "memo": memo,
         }
-        if not any(updated[field].strip() for field in CONTACT_FIELDS):
-            st.warning("모든 연락처 정보를 비울 수는 없습니다.")
-        else:
-            update_contact(selected_id, updated)
-            st.success("수정된 정보가 임시 목록에 반영됐습니다.")
+        try:
+            if not update_contact(selected_id, updated):
+                st.warning("연락처를 찾을 수 없습니다.")
+            else:
+                st.session_state["contacts_notice"] = "수정된 정보가 목록에 반영됐습니다."
+                st.rerun()
+        except ValueError as error:
+            st.warning(str(error))
 
     with st.expander("연락처 삭제"):
         confirmed = st.checkbox("선택한 연락처를 삭제하겠습니다.", key=f"confirm_delete_{selected_id}")
@@ -145,6 +146,13 @@ def show_contacts():
     st.title("연락처 관리")
     st.write("인식하거나 직접 입력한 명함 정보를 확인하고 CSV로 저장할 수 있습니다.")
     st.warning("현재 연락처는 서버에 영구 저장되지 않습니다. 페이지를 떠나기 전에 CSV 파일을 다운로드하세요.", icon="⚠️")
+
+    result = st.session_state.pop("contacts_save_result", None)
+    if result is not None:
+        show_save_result(result, ui=st)
+    notice = st.session_state.pop("contacts_notice", None)
+    if notice:
+        st.success(notice)
 
     total = len(st.session_state.contacts)
     with_email = sum(bool(item.get("email")) for item in st.session_state.contacts)

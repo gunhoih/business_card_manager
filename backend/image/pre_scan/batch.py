@@ -16,7 +16,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from backend.contact.csv_service import CONTACT_FIELDS, safe_csv_value
+from backend.card_storage.schema import CONTACT_FIELDS
+from backend.card_storage.csv_service import export_dataset_csv, safe_csv_value
 from backend.image.scan_service import scan_auto_image, scan_manual_image
 
 
@@ -232,26 +233,6 @@ def update_record_fields(record: dict, values: dict) -> bool:
     record["manual_fields"] = sorted(set(record.get("manual_fields", [])) | set(changed))
     record["reviewed"] = False
     return True
-
-
-def export_dataset_csv(records: list[dict]) -> bytes:
-    """명함 한 장을 CSV 한 행으로 변환한다. 사람이 수정한 값이 최우선이다."""
-    buffer = io.StringIO(newline="")
-    columns = ["source_file", "scan_status", "ocr_status", "reviewed", *CONTACT_FIELDS]
-    writer = csv.DictWriter(buffer, fieldnames=columns)
-    writer.writeheader()
-    for record in records:
-        values = record.get("fields") or (record.get("ocr") or {}).get("fields") or {}
-        ocr_status = "done" if record.get("ocr") else "error" if record.get("ocr_error") else "not_run"
-        row = {
-            "source_file": record.get("name", ""),
-            "scan_status": record.get("status", ""),
-            "ocr_status": ocr_status,
-            "reviewed": "yes" if record.get("reviewed") else "no",
-            **{field: values.get(field, "") for field in CONTACT_FIELDS},
-        }
-        writer.writerow({column: safe_csv_value(row.get(column, "")) for column in columns})
-    return buffer.getvalue().encode("utf-8-sig")
 
 
 def status_counts(records: list[dict]) -> dict[str, int]:

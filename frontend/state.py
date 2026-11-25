@@ -6,12 +6,10 @@
 - 스캔 대상이 바뀌면 이전 OCR 좌표·텍스트·자동 후보를 폐기한다.
 """
 
-from datetime import datetime
-from uuid import uuid4
-
 import streamlit as st
 
-from backend.contact.csv_service import CONTACT_FIELDS
+from backend.card_storage.schema import CONTACT_FIELDS
+from backend.card_storage.service import save_contact, replace_contact, delete_contact as remove_contact
 
 
 OCR_TEMP_KEYS = (
@@ -195,23 +193,16 @@ def set_extraction_result(raw_text, fields):
 
 
 def add_contact(contact):
-    item = {field: str(contact.get(field) or "").strip() for field in CONTACT_FIELDS}
-    item["id"] = str(uuid4())
-    item["created_at"] = str(contact.get("created_at") or datetime.now().isoformat(timespec="seconds"))
-    st.session_state.contacts.append(item)
+    """기존 호출부 호환용. 연락처 저장 기준은 card_storage에서 관리한다."""
+    status, item, reason = save_contact(st.session_state.setdefault("contacts", []), contact)
+    if item is None:
+        raise ValueError(reason)
     return item
 
 
 def update_contact(contact_id, values):
-    for item in st.session_state.contacts:
-        if item["id"] == contact_id:
-            for field in CONTACT_FIELDS:
-                item[field] = str(values.get(field) or "").strip()
-            return True
-    return False
+    return replace_contact(st.session_state.contacts, contact_id, values)
 
 
 def delete_contact(contact_id):
-    before = len(st.session_state.contacts)
-    st.session_state.contacts = [item for item in st.session_state.contacts if item["id"] != contact_id]
-    return len(st.session_state.contacts) < before
+    return remove_contact(st.session_state.contacts, contact_id)
