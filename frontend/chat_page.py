@@ -1,14 +1,14 @@
-"""현재 명함 또는 선택한 저장 연락처에 대한 간단한 LLM 채팅."""
+"""저장된 명함 전체를 자연어로 조회하는 챗봇 화면."""
 
-import os
 import hashlib
+import json
+import os
 
 from dotenv import load_dotenv
-from openai import OpenAIError
 import streamlit as st
 
-from backend.chat.service import FIELD_NAMES, ask_about_card, build_card_context
-
+from backend.agent.service import ask_contacts, MAX_HISTORY
+from backend.card_storage.schema import CONTACT_FIELDS
 
 load_dotenv()
 
@@ -23,70 +23,80 @@ def get_setting(name, default=""):
     return os.getenv(name, default).strip()
 
 
+def _chat_source():
+    saved = st.session_state.get("contacts", [])
+    current = {field: st.session_state.get(f"scan_{field}", "") for field in CONTACT_FIELDS}
+    options = ["저장된 연락처 전체"]
+    if any(str(value or "").strip() for value in current.values()):
+        options.append("현재 개별 스캔 명함")
+    source = st.radio("조회 대상", options, horizontal=True, key="agent_source")
+    if source == "현재 개별 스캔 명함":
+        current["id"] = "current-scan"
+        return source, [current]
+    return source, saved
+
+
+def _source_key(source, contacts):
+    records = [{key: str(row.get(key) or "") for key in ["id", *CONTACT_FIELDS]}
+               for row in contacts]
+    content = json.dumps(records, ensure_ascii=False, sort_keys=True)
+    return source + ":" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 def show_chat_page():
     st.title("명함 챗봇")
-    st.write("추출·수정한 명함 정보를 바탕으로 질문할 수 있습니다. OCR은 API 없이 동작하지만 챗봇은 OpenAI API를 사용합니다.")
-    st.warning("명함의 개인정보가 질문과 함께 OpenAI API로 전송됩니다. 본인 또는 제공자의 동의를 받은 명함으로만 사용하세요.")
+    st.caption("저장된 연락처를 자연어로 검색하고 상세 정보와 통계를 확인할 수 있습니다.")
+    source, contacts = _chat_source()
+    st.caption(f"조회 가능한 명함 {len(contacts)}개 · 조회 전용")
 
-    current_fields = {key: st.session_state.get(f"scan_{key}", "") for key in FIELD_NAMES}
-    raw_text = st.session_state.get("scan_raw_text", "")
-    contacts = st.session_state.get("contacts", [])
-
-    source_options = ["현재 스캔 명함"]
-    if contacts:
-        source_options.append("저장된 연락처 한 명")
-    source = st.radio("참고 데이터", source_options, horizontal=True)
-
-    if source == "저장된 연락처 한 명":
-        index = st.selectbox(
-            "연락처 선택", range(len(contacts)),
-            format_func=lambda i: f"{contacts[i].get('name') or '이름 없음'} · {contacts[i].get('company') or '소속 없음'}",
-        )
-        card = contacts[index]
-        source_key = "contact:" + card["id"]
-        context = build_card_context(card)
-        has_data = any(str(card.get(key, "")).strip() for key in FIELD_NAMES)
-    else:
-        source_key = "scan:" + st.session_state.get("scan_image_id", "")
-        context = build_card_context(current_fields, raw_text)
-        has_data = bool(raw_text.strip() or any(str(value).strip() for value in current_fields.values()))
-
-    source_key += ":" + hashlib.sha256(context.encode("utf-8")).hexdigest()
-    if st.session_state.get("chat_source_key") != source_key:
-        st.session_state.chat_source_key = source_key
-        st.session_state.chat_messages = []
-
-    with st.expander("LLM에 전달할 명함 정보 미리보기"):
-        st.code(context, language="json")
+    source_key = _source_key(source, contacts)
+    if st.session_state.get("contact_agent_source_key") != source_key:
+        st.session_state.contact_agent_source_key = source_key
+        st.session_state.contact_agent_messages = []
 
     api_key = get_setting("OPENAI_API_KEY")
-    model = get_setting("OPENAI_LLM_MODEL", "gpt-4o-mini")
-    if not api_key or api_key in ("...", "YOUR_OPENAI_API_KEY_HERE"):
-        st.info("챗봇 사용 시 .env 또는 .streamlit/secrets.toml에 OPENAI_API_KEY를 설정해 주세요. OCR은 키 없이도 작동합니다.")
-    elif not has_data:
-        st.info("스캔 명함 정보를 입력하거나 OCR을 실행한 후 질문해 주세요.")
+    model = get_setting("OPENAI_LLM_MODEL") or get_setting("OPENAI_MODEL") or "gpt-4o-mini"
+    ready = bool(api_key and api_key not in ("...", "YOUR_OPENAI_API_KEY_HERE", "sk-...") and contacts)
+    if not api_key or api_key in ("...", "YOUR_OPENAI_API_KEY_HERE", "sk-..."):
+        st.info(".env 또는 Streamlit Secrets에 OPENAI_API_KEY를 설정하세요. OCR은 API 키 없이 사용할 수 있습니다.")
+    elif not contacts:
+        st.info("명함 데이터 추출 화면에서 연락처 목록에 먼저 저장하거나 CSV를 가져오세요.")
     else:
-        st.caption(f"사용 모델: {model} · 질문할 때만 API 호출")
+        st.caption(f"사용 모델: {model}")
 
-    history = st.session_state.get("chat_messages", [])
-    if st.button("대화 내역 초기화", disabled=not history):
-        st.session_state.chat_messages = []
+    # 명함에는 개인정보가 있을 수 있으므로 API 전송을 명시적으로 알린다.
+    consent = st.checkbox("질문과 필요한 조회 결과를 OpenAI API로 전송하는 데 동의합니다.", key="contact_agent_consent")
+    st.caption("동의를 받은 명함만 사용하세요. 최근 대화와 조회 결과가 전송되며, 원본 이미지와 OCR 원문은 전송하지 않습니다.")
+
+    history = st.session_state.get("contact_agent_messages", [])
+    if st.button("대화 초기화", disabled=not history, key="agent_clear_history"):
+        st.session_state.contact_agent_messages = []
         st.rerun()
 
     for item in history:
         with st.chat_message(item["role"]):
             st.markdown(item["content"])
+    if not history:
+        st.caption("예: 삼성전자 소속 연락처 찾아줘 / 홍길동의 이메일은? / 회사별 등록 건수 알려줘")
 
-    question = st.chat_input("예: 이 명함에 적힌 이메일 주소는?", disabled=not has_data or not api_key or api_key in ("...", "YOUR_OPENAI_API_KEY_HERE"))
-    if question:
-        with st.chat_message("user"):
-            st.markdown(question)
-        with st.chat_message("assistant"):
-            with st.spinner("명함 정보로 답변 중..."):
-                try:
-                    answer = ask_about_card(question, context, history, api_key=api_key, model=model)
-                except (OpenAIError, RuntimeError, ValueError):
-                    st.error("LLM 응답을 받지 못했습니다. 모델 이름, API 키, 사용량 및 네트워크를 확인해 주세요.")
-                    return
-                st.markdown(answer)
-        st.session_state.chat_messages = (history + [{"role": "user", "content": question}, {"role": "assistant", "content": answer}])[-12:]
+    question = st.chat_input("저장된 명함에 대해 질문하세요.", disabled=not ready or not consent,
+                             max_chars=2000, key="contact_agent_question")
+    if not question or not ready or not consent:
+        return
+    with st.chat_message("user"):
+        st.markdown(question)
+    with st.chat_message("assistant"):
+        try:
+            with st.spinner("연락처를 조회하고 있습니다..."):
+                answer = ask_contacts(question, contacts, history, api_key=api_key, model=model)
+        except Exception as error:
+            # API 오류에는 요청 내용이 포함될 수 있어 원문을 웹 화면에 노출하지 않는다.
+            if isinstance(error, (ValueError, RuntimeError)):
+                st.error("질문 또는 조회 결과를 처리하지 못했습니다. 질문을 좁혀 다시 시도해 주세요.")
+            else:
+                st.error("API 연결에 실패했습니다. API 키, 모델 이름, 사용 한도 및 네트워크를 확인해 주세요.")
+            return
+        st.markdown(answer)
+    st.session_state.contact_agent_messages = (
+        history + [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+    )[-MAX_HISTORY:]
