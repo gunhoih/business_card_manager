@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 import streamlit as st
@@ -10,7 +11,7 @@ import streamlit as st
 from backend.agent.service import ask_contacts, MAX_HISTORY
 from backend.card_storage.schema import CONTACT_FIELDS
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 def get_setting(name, default=""):
@@ -41,6 +42,25 @@ def _source_key(source, contacts):
                for row in contacts]
     content = json.dumps(records, ensure_ascii=False, sort_keys=True)
     return source + ":" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _api_error_message(error):
+    """API 키나 연락처 데이터가 담긴 예외 원문은 사용자 화면에 노출하지 않는다."""
+    messages = {
+        "AuthenticationError": "API 키 인증에 실패했습니다. 키 설정을 확인하세요.",
+        "PermissionDeniedError": "API 키의 모델 접근 권한을 확인하세요.",
+        "NotFoundError": "설정한 모델 또는 API 경로를 찾지 못했습니다. 모델 이름을 확인하세요.",
+        "RateLimitError": "API 요청 한도 또는 잔여 크레딧을 확인한 후 다시 시도하세요.",
+        "APITimeoutError": "API 응답 시간이 초과됐습니다. 질문을 좁혀 다시 시도하세요.",
+        "APIConnectionError": "API 서버에 연결하지 못했습니다. 인터넷 및 서버 상태를 확인하세요.",
+        "BadRequestError": "API 요청이 거부됐습니다. 모델의 Tool Calling 지원 및 설정을 확인하세요.",
+        "InternalServerError": "API 서버에 일시적인 문제가 있습니다. 다시 시도하세요.",
+    }
+    if type(error).__name__ in messages:
+        return messages[type(error).__name__]
+    if isinstance(error, (ValueError, RuntimeError)):
+        return "질문 또는 조회 결과를 처리하지 못했습니다. 질문을 좁혀 다시 시도해 주세요."
+    return "API 연결에 실패했습니다. API 키, 모델 이름, 사용 한도 및 네트워크를 확인해 주세요."
 
 
 def show_chat_page():
@@ -91,10 +111,7 @@ def show_chat_page():
                 answer = ask_contacts(question, contacts, history, api_key=api_key, model=model)
         except Exception as error:
             # API 오류에는 요청 내용이 포함될 수 있어 원문을 웹 화면에 노출하지 않는다.
-            if isinstance(error, (ValueError, RuntimeError)):
-                st.error("질문 또는 조회 결과를 처리하지 못했습니다. 질문을 좁혀 다시 시도해 주세요.")
-            else:
-                st.error("API 연결에 실패했습니다. API 키, 모델 이름, 사용 한도 및 네트워크를 확인해 주세요.")
+            st.error(_api_error_message(error))
             return
         st.markdown(answer)
     st.session_state.contact_agent_messages = (

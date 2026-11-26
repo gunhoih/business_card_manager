@@ -1,6 +1,7 @@
 """명함을 일괄 인식하고 이미지 옆에서 추출 데이터를 바로 확인·수정한다."""
 
 import math
+from time import monotonic
 
 import pandas as pd
 import streamlit as st
@@ -12,6 +13,7 @@ from backend.card_storage.service import save_contacts
 from backend.card_storage.csv_service import export_dataset_csv
 from frontend.storage_ui import show_save_result
 from backend.image.pre_scan.batch import (
+    MAX_FILES, MAX_TOTAL_BYTES,
     apply_manual_scan,
     apply_ocr_result,
     ensure_record_fields,
@@ -26,6 +28,10 @@ from backend.ocr.service import available_languages
 
 
 PAGE_SIZE = 6
+# 자동 OCR을 먼저 시작하고 큰 배치는 중간 결과를 보존한 채 이어서 처리한다.
+OCR_RUN_SECONDS = 45
+OCR_RUN_CARDS = 12
+OCR_CARD_SECONDS = 30
 STATUS_LABELS = {
     "auto": "자동 스캔",
     "manual": "수동 보정",
@@ -36,7 +42,8 @@ STATUS_LABELS = {
 
 def _clear_editor_keys():
     """다른 폴더를 불러올 때 이전 표의 수정값이 새 결과로 섞이지 않게 한다."""
-    prefixes = ("batch_dataset_", "batch_reviewed_", "batch_page_")
+    prefixes = ("batch_dataset_", "batch_reviewed_", "batch_page_", "batch_points_",
+                "batch_manual_", "batch_cancel_", "batch_retry_")
     for key in list(st.session_state):
         if key.startswith(prefixes):
             st.session_state.pop(key, None)
@@ -44,7 +51,7 @@ def _clear_editor_keys():
 
 def _clear_batch():
     """불러온 명함만 초기화하며 기존 연락처는 유지한다."""
-    for key in ("batch_records", "batch_signature"):
+    for key in ("batch_records", "batch_signature", "batch_rejected_signature", "batch_load_error"):
         st.session_state.pop(key, None)
     _clear_editor_keys()
     st.session_state["batch_picker_version"] = st.session_state.get("batch_picker_version", 0) + 1
@@ -61,47 +68,71 @@ def _save_records_to_contacts(records):
     return save_contacts(contacts, rows, max_contacts=MAX_CONTACTS)
 
 
-def _run_ocr_one(record):
+def _run_ocr_one(record, timeout=OCR_CARD_SECONDS):
     """명함 하나만 인식하고 수동 수정한 필드는 유지한다."""
     if not record.get("scanned_bytes"):
         return
 
     try:
-        result = run_ocr_pipeline(record["scanned_bytes"], languages="kor+eng", psm=11)
-    except (RuntimeError, ValueError, OSError) as error:
-        record["ocr_error"] = str(error)
-        return
+        result = run_ocr_pipeline(record["scanned_bytes"], languages="kor+eng", psm=11,
+                                  timeout=timeout)
+        apply_ocr_result(record, result)
+    except Exception as error:
+        # 파일 한 장의 엔진/전처리 오류로 전체 배치를 중단하지 않는다.
+        record["ocr_error"] = (str(error) if isinstance(error, (RuntimeError, ValueError))
+                               else f"글자 인식 실패 ({type(error).__name__})")
 
-    apply_ocr_result(record, result)
+
+def _pending_records(records):
+    return [record for record in records if record.get("scanned_bytes")
+            and not record.get("ocr") and not record.get("ocr_error")]
 
 
 def _run_ocr_batch(records, progress=None):
-    """명함마다 독립적으로 OCR을 실행한다. 엔진 부재 시 반복 실행하지 않는다."""
+    """한 번에 제한된 시간/건수만 처리한다. 미처리 명함은 다음 실행에 남긴다."""
     targets = [record for record in records if record.get("scanned_bytes")]
     if not targets:
-        return
+        return 0
 
     try:
         languages = set(available_languages())
         missing = {"kor", "eng"} - languages
         if missing:
             raise RuntimeError("OCR 언어 모델이 없습니다: " + ", ".join(sorted(missing)))
-    except (RuntimeError, OSError) as error:
+    except (RuntimeError, OSError, ValueError) as error:
         for record in targets:
             record["ocr_error"] = str(error)
-        return
+        return 0
 
-    for index, record in enumerate(targets, start=1):
-        _run_ocr_one(record)
+    deadline = monotonic() + OCR_RUN_SECONDS
+    done = 0
+    for record in targets:
+        remaining = deadline - monotonic()
+        if remaining < 5 or done >= OCR_RUN_CARDS:
+            break
+        _run_ocr_one(record, timeout=min(OCR_CARD_SECONDS, remaining))
+        done += 1
         if progress:
-            progress(index, len(targets), record["name"])
+            progress(done, len(targets), record["name"])
+    return done
 
 
 def _load_folder(files):
-    """업로드가 변경되면 자동 스캔한 뒤 곧바로 OCR까지 수행한다."""
+    """새 파일만 스캔하고 OCR 전에도 결과를 세션에 기록한다."""
+    if len(files) > MAX_FILES:
+        st.error(f"한 번에 최대 {MAX_FILES}장의 이미지를 처리할 수 있습니다.")
+        return
+    # UploadedFile.size를 먼저 확인하여 불필요한 대용량 복사를 줄인다.
+    sizes = [getattr(file, "size", None) for file in files]
+    if all(isinstance(size, int) for size in sizes) and sum(sizes) > MAX_TOTAL_BYTES:
+        st.error("폴더 전체 용량은 120MB 이하로 제한됩니다.")
+        return
     images = [(file.name, file.getvalue()) for file in files]
     signature = input_signature(images)
     if signature == st.session_state.get("batch_signature"):
+        return
+    if signature == st.session_state.get("batch_rejected_signature"):
+        st.error(st.session_state.get("batch_load_error", "업로드 파일을 확인하세요."))
         return
 
     progress = st.progress(0.0, text="명함을 자동으로 스캔하는 중입니다.")
@@ -109,21 +140,29 @@ def _load_folder(files):
         def report_scan(done, total, name):
             progress.progress(done / max(1, total), text=f"스캔 {done}/{total}: {name}")
 
-        records = process_folder(images, on_progress=report_scan)
+        records = process_folder(images, on_progress=report_scan,
+                                 previous_records=st.session_state.get("batch_records", []))
+        if not records:
+            raise ValueError("지원하는 명함 이미지가 없습니다.")
+        # 스캔이 완료된 시점에 저장하여 OCR 중단 시에도 작업을 복구할 수 있다.
+        _clear_editor_keys()
+        st.session_state["batch_records"] = records
+        st.session_state["batch_signature"] = signature
+        st.session_state.pop("batch_rejected_signature", None)
+        st.session_state.pop("batch_load_error", None)
 
         def report_ocr(done, total, name):
             progress.progress(done / max(1, total), text=f"글자 인식 {done}/{total}: {name}")
 
-        _run_ocr_batch(records, progress=report_ocr)
+        _run_ocr_batch(_pending_records(records), progress=report_ocr)
     except ValueError as error:
+        st.session_state["batch_rejected_signature"] = signature
+        st.session_state["batch_load_error"] = str(error)
         st.error(str(error))
-        return
+        if st.session_state.get("batch_records"):
+            st.caption("새 업로드를 처리하지 못해 이전 작업을 그대로 유지합니다.")
     finally:
         progress.empty()
-
-    _clear_editor_keys()
-    st.session_state["batch_records"] = records
-    st.session_state["batch_signature"] = signature
 
 
 def _manual_preview(image, record):
@@ -234,17 +273,49 @@ def _show_image(record):
             st.rerun()
 
 
+def _apply_editor_changes(record, editor_key):
+    """위젯의 셀 변경을 화면 재실행 전에 해당 명함에 반영한다."""
+    state = st.session_state.get(editor_key) or {}
+    if not isinstance(state, dict) or record.get("editor_key") != editor_key:
+        return
+    base = record.get("editor_base") or record.get("fields") or {}
+    edits = state.get("edited_rows", {})
+    if not isinstance(edits, dict):
+        return
+    # edited_rows는 현재 기준 표에 대한 전체 변경분이다. 기준 표를 고정해야 한다.
+    values = {field: str(base.get(field) or "") for field in CONTACT_FIELDS}
+    for index, changes in edits.items():
+        try:
+            index = int(index)
+            if 0 <= index < len(CONTACT_FIELDS) and isinstance(changes, dict) and "추출값" in changes:
+                value = changes["추출값"]
+                values[CONTACT_FIELDS[index]] = "" if value is None else str(value)
+        except (TypeError, ValueError):
+            continue
+    if update_record_fields(record, values):
+        st.session_state[f"batch_reviewed_{record['id']}"] = False
+
+
+def _apply_review_change(record, key):
+    record["reviewed"] = bool(st.session_state.get(key, False))
+
+
 def _show_dataset(record):
-    """필드/값 표를 직접 수정하면 해당 명함의 결과 데이터에 반영한다."""
+    """수정 표의 기준값을 고정하고, 위젯이 사라진 후에는 최종 저장값으로 복원한다."""
+    revision = record.get("field_revision", 0)
+    editor_key = f"batch_dataset_{record['id']}_{revision}"
     fields = record.get("fields") or {}
+    if editor_key not in st.session_state or record.get("editor_key") != editor_key:
+        record["editor_key"] = editor_key
+        record["editor_base"] = dict(fields)
+    base = record["editor_base"]
     rows = pd.DataFrame([
-        {"항목": FIELD_LABELS[field], "추출값": str(fields.get(field) or "")}
+        {"항목": FIELD_LABELS[field], "추출값": str(base.get(field) or "")}
         for field in CONTACT_FIELDS
     ])
-    revision = record.get("field_revision", 0)
     edited = st.data_editor(
         rows,
-        key=f"batch_dataset_{record['id']}_{revision}",
+        key=editor_key,
         hide_index=True,
         disabled=["항목"],
         num_rows="fixed",
@@ -254,6 +325,8 @@ def _show_dataset(record):
             "항목": st.column_config.TextColumn("항목", width="small"),
             "추출값": st.column_config.TextColumn("추출값", width="large"),
         },
+        on_change=_apply_editor_changes,
+        args=(record, editor_key),
     )
     current = {
         field: "" if pd.isna(value) else str(value)
@@ -273,7 +346,8 @@ def _show_dataset(record):
 
     review_key = f"batch_reviewed_{record['id']}"
     st.session_state.setdefault(review_key, record.get("reviewed", False))
-    confirmed = st.checkbox("이 명함의 추출값 확인 완료", key=review_key)
+    confirmed = st.checkbox("이 명함의 추출값 확인 완료", key=review_key,
+                            on_change=_apply_review_change, args=(record, review_key))
     record["reviewed"] = confirmed
 
 
@@ -308,9 +382,8 @@ def show_batch_scanner():
 
     if uploaded:
         _load_folder(uploaded)
-    elif st.session_state.get("batch_records"):
-        _clear_batch()
-        st.rerun()
+    # 다른 페이지로 이동하면 업로더 위젯이 초기화될 수 있다.
+    # 실제 작업 데이터는 명시적인 '목록 비우기' 전까지 유지한다.
     records = st.session_state.get("batch_records") or []
     if not records:
         st.info("폴더를 선택하면 아래에 명함 이미지와 추출 데이터가 나란히 표시됩니다.")
@@ -326,6 +399,18 @@ def show_batch_scanner():
         f"전체 {len(records)}장 · 자동 보정 {counts['auto']}장 · 수동 완료 {counts['manual']}장"
         f" · 수동 필요 {counts['needs_manual']}장 · 글자 추출 {recognized}장 · 확인 완료 {reviewed}장"
     )
+
+    pending = _pending_records(records)
+    if pending:
+        st.caption(f"아직 글자를 인식하지 않은 보정 완료 명함 {len(pending)}장 · 현재까지의 결과는 유지됩니다.")
+        if st.button(f"남은 {len(pending)}장 이어서 추출", key="batch_continue", type="primary"):
+            progress = st.progress(0.0, text="남은 명함을 인식하는 중입니다.")
+            try:
+                _run_ocr_batch(pending, progress=lambda done, total, name:
+                               progress.progress(done / max(1, total), text=f"글자 인식 {done}/{total}: {name}"))
+            finally:
+                progress.empty()
+            st.rerun()
 
     failed_ocr = [item for item in records if item.get("scanned_bytes") and item.get("ocr_error")]
     if failed_ocr and st.button(f"인식 실패 {len(failed_ocr)}장 다시 시도", key="batch_retry_failed"):
@@ -372,6 +457,8 @@ def show_batch_scanner():
 
     st.divider()
     st.caption("셀 수정 후 Enter로 확정하세요. 전화번호 또는 이메일이 일치하면 갱신하고, 일치하지 않으면 신규 등록합니다. 식별 정보가 없으면 CSV로만 내보낼 수 있습니다.")
+    if pending:
+        st.caption("아직 인식하지 않은 명함은 현재 입력된 값만 저장·다운로드됩니다.")
     save_col, csv_col = st.columns(2, gap="medium")
     with save_col:
         if st.button("연락처 목록에 저장", type="primary", width="stretch", key="batch_save_contacts"):

@@ -1,6 +1,7 @@
 """저장된 연락처의 검색, 상세 조회, 집계를 담당한다. 읽기 전용 함수이다."""
 
 from collections import Counter
+import json
 import unicodedata
 
 from backend.card_storage.schema import CONTACT_FIELDS
@@ -10,6 +11,7 @@ DEFAULT_FIELDS = ("name", "company", "department", "position")
 GROUP_FIELDS = ("company", "department", "position")
 MAX_RESULTS = 20
 MAX_FILTERS = 10
+MAX_PAGE_CHARS = 12000
 OPERATORS = ("contains", "equals", "missing", "present")
 
 
@@ -111,18 +113,32 @@ def _project(contact, fields):
     return result
 
 
+def _bounded_page(rows):
+    """큰 메모·주소가 있는 경우에도 도구 결과 크기를 제한한다."""
+    result = []
+    size = 0
+    for row in rows:
+        row_size = len(json.dumps(row, ensure_ascii=False)) + 2
+        if result and size + row_size > MAX_PAGE_CHARS:
+            break
+        result.append(row)
+        size += row_size
+    return result
+
+
 def search_contacts(contacts, filters=None, fields=None, limit=20, offset=0):
     """모든 검색 조건(AND)에 맞는 연락처와 전체 일치 건수를 반환한다."""
     limit, offset = _page(limit, offset)
     fields = _check_fields(fields)
     matched = _select(contacts, filters)
-    page = matched[offset:offset + limit]
+    page = _bounded_page(_project(contact, fields) for contact in matched[offset:offset + limit])
     return {
         "total": len(matched),
-        "contacts": [_project(contact, fields) for contact in page],
+        "contacts": page,
         "offset": offset,
         "returned": len(page),
         "has_more": offset + len(page) < len(matched),
+        "next_offset": offset + len(page) if offset + len(page) < len(matched) else None,
     }
 
 

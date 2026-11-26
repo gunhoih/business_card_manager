@@ -49,12 +49,14 @@ def main():
     page = st.navigation(pages)
 
     st.sidebar.divider()
-    st.sidebar.metric("임시 저장된 연락처", len(st.session_state.contacts))
+    contact_metric = st.sidebar.empty()
     st.sidebar.caption("OpenCV 보정 · Tesseract OCR · 로컬 규칙 분류 · CSV 관리")
     st.sidebar.caption("명함 챗봇만 OpenAI API 키가 필요합니다.")
     st.sidebar.caption("연락처는 브라우저 세션에만 보관됩니다. CSV로 내려받아 보관하세요.")
 
     page.run()
+    # 같은 실행 안에서 연락처가 추가/수정돼도 최신 건수를 표시한다.
+    contact_metric.metric("임시 저장된 연락처", len(st.session_state.contacts))
 
 
 if __name__ == "__main__":

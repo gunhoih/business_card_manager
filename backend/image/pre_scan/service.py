@@ -20,20 +20,20 @@ class PreScanCandidate:
 
 
 def _scale_for_ocr(width: int, height: int) -> float:
-    # Limit memory usage even when the uploaded image is already large.
-    scale = min(
-        2.0,
-        MAX_ENHANCED_LONG_SIDE / max(width, height),
-        sqrt(MAX_ENHANCED_PIXELS / (width * height)),
-    )
-    return max(1.0, scale)
+    return min(2.0, MAX_ENHANCED_LONG_SIDE / max(width, height),
+               sqrt(MAX_ENHANCED_PIXELS / (width * height)))
 
 
 def _resize(image: np.ndarray, scale: float, binary: bool = False) -> np.ndarray:
-    if scale <= 1.0:
+    if scale == 1.0:
         return image
-    interpolation = cv2.INTER_NEAREST if binary else cv2.INTER_CUBIC
-    return cv2.resize(image, None, fx=scale, fy=scale, interpolation=interpolation)
+    height, width = image.shape[:2]
+    interpolation = (cv2.INTER_AREA if scale < 1 else
+                     cv2.INTER_NEAREST if binary else cv2.INTER_CUBIC)
+    if binary:
+        interpolation = cv2.INTER_NEAREST
+    return cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))),
+                      interpolation=interpolation)
 
 
 def prepare_pre_scan_images(image: Image.Image) -> tuple[PreScanCandidate, ...]:
@@ -47,6 +47,12 @@ def prepare_pre_scan_images(image: Image.Image) -> tuple[PreScanCandidate, ...]:
         raise ValueError("Image dimensions must be at least 2x2.")
 
     original = ImageOps.exif_transpose(image).convert("RGB")
+    scale = _scale_for_ocr(original.width, original.height)
+    original_scale = min(1.0, scale)
+    if original_scale < 1.0:
+        original = original.resize((max(1, round(original.width * original_scale)),
+                                    max(1, round(original.height * original_scale))),
+                                   Image.Resampling.LANCZOS)
     pixels = np.asarray(original)
     gray = cv2.cvtColor(pixels, cv2.COLOR_RGB2GRAY)
 
@@ -54,9 +60,9 @@ def prepare_pre_scan_images(image: Image.Image) -> tuple[PreScanCandidate, ...]:
     contrast = clahe.apply(gray)
     _, binary = cv2.threshold(contrast, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    scale = _scale_for_ocr(original.width, original.height)
+    extra_scale = scale / original_scale
     return (
-        PreScanCandidate("original", original, 1.0),
-        PreScanCandidate("contrast", Image.fromarray(_resize(contrast, scale)), scale),
-        PreScanCandidate("binary", Image.fromarray(_resize(binary, scale, binary=True)), scale),
+        PreScanCandidate("original", original, original_scale),
+        PreScanCandidate("contrast", Image.fromarray(_resize(contrast, extra_scale)), scale),
+        PreScanCandidate("binary", Image.fromarray(_resize(binary, extra_scale, binary=True)), scale),
     )

@@ -10,17 +10,19 @@ from backend.card_storage.service import filter_new_contacts
 def safe_csv_value(value):
     """스프레드시트에서 수식으로 실행될 수 있는 값의 앞을 보호한다."""
     text = "" if value is None else str(value)
-    if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith("'"):
+    if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("'", "\t", "\r", "\n")):
         return "'" + text
     return text
 
 
 def _restore_csv_value(value):
     """내보낼 때 추가한 보호용 따옴표를 복원한다. 재내보내기 시 중복되지 않는다."""
-    text = str(value or "").strip()
-    if text.startswith("''") or (text.startswith("'") and text[1:].lstrip().startswith(("=", "+", "-", "@"))):
-        return text[1:]
-    return text
+    text = str(value or "")
+    if text.startswith("''") or (text.startswith("'") and (
+            text[1:].lstrip().startswith(("=", "+", "-", "@"))
+            or text[1:].startswith(("\t", "\r", "\n")))):
+        text = text[1:]
+    return text.strip()
 
 
 def _write_csv(columns, rows):
@@ -73,7 +75,7 @@ def import_contacts_csv(file_bytes):
             raise ValueError("CSV 헤더에 중복된 열 이름이 있습니다.")
         contacts = []
         for row in reader:
-            if None in row:
+            if None in row or any(value is None for value in row.values()):
                 raise ValueError("CSV 열 개수가 헤더와 일치하지 않습니다.")
             contact = {field: _restore_csv_value(row.get(field)) for field in CSV_FIELDS}
             if not any(contact[field] for field in CONTACT_FIELDS):

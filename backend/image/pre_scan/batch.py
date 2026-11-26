@@ -26,6 +26,10 @@ MAX_FILES = 80
 MAX_TOTAL_BYTES = 120 * 1024 * 1024
 MAX_FILE_BYTES = 12 * 1024 * 1024
 MAX_PIXELS = 12_000_000
+# 일괄 보정본의 누적 메모리 사용량을 제한한다.
+MAX_SCAN_PIXELS = 3_000_000
+MAX_SCAN_LONG_SIDE = 2400
+MAX_SCAN_BYTES = 3 * 1024 * 1024
 
 
 def normalize_name(name: str) -> str:
@@ -50,29 +54,46 @@ def image_from_bytes(raw: bytes) -> Image.Image:
 
 
 def _normalize_scan_result(raw: bytes) -> tuple[bytes, Image.Image]:
-    """호모그래피 결과가 지나치게 클 때 OCR 제한에 맞게 축소한다."""
+    """일괄 보정본을 OCR 및 세션 메모리 한도 안에 유지한다."""
     with Image.open(io.BytesIO(raw)) as source:
         width, height = source.size
-        if len(raw) <= MAX_FILE_BYTES and width * height <= MAX_PIXELS:
+        if (len(raw) <= MAX_SCAN_BYTES and width * height <= MAX_SCAN_PIXELS
+                and max(width, height) <= MAX_SCAN_LONG_SIDE):
             return raw, source.copy()
-        scale = min(1.0, 2400 / max(width, height), sqrt(3_000_000 / (width * height)))
+        scale = min(1.0, MAX_SCAN_LONG_SIDE / max(width, height),
+                    sqrt(MAX_SCAN_PIXELS / (width * height)))
         reduced = source.convert("RGB").resize(
             (max(2, round(width * scale)), max(2, round(height * scale))),
             Image.Resampling.LANCZOS,
         )
-        output = io.BytesIO()
-        reduced.save(output, format="PNG", optimize=True)
-        return output.getvalue(), reduced
+        while True:
+            output = io.BytesIO()
+            reduced.save(output, format="PNG", compress_level=3)
+            encoded = output.getvalue()
+            if len(encoded) <= MAX_SCAN_BYTES:
+                return encoded, reduced
+            reduced = reduced.resize(
+                (max(2, round(reduced.width * 0.8)), max(2, round(reduced.height * 0.8))),
+                Image.Resampling.LANCZOS,
+            )
 
 
 def input_signature(images: list[tuple[str, bytes]]) -> str:
-    """입력 폴더가 바뀔 때에만 자동 스캔을 다시 실행하기 위한 식별값."""
+    """파일 순서와 중복 선택에 관계없는 업로드 식별값."""
     digest = hashlib.sha256()
-    for name, data in sorted(images, key=lambda row: normalize_name(row[0])):
-        digest.update(normalize_name(name).encode("utf-8", errors="replace"))
+    entries = {(normalize_name(name), hashlib.sha256(data).digest())
+               for name, data in images}
+    for name, content_hash in sorted(entries):
+        digest.update(name.encode("utf-8", errors="replace"))
         digest.update(b"\0")
-        digest.update(hashlib.sha256(data).digest())
+        digest.update(content_hash)
     return digest.hexdigest()
+
+
+def record_id(name, raw):
+    digest = hashlib.sha256(normalize_name(name).encode("utf-8", errors="replace") + b"\0")
+    digest.update(raw)
+    return digest.hexdigest()[:24]
 
 
 def _reasonable_card(points, scanned_image: Image.Image, original_image: Image.Image) -> bool:
@@ -88,7 +109,7 @@ def _reasonable_card(points, scanned_image: Image.Image, original_image: Image.I
     area_ratio = cv2.contourArea(corners) / (original_image.width * original_image.height)
     if area_ratio < 0.08 or area_ratio > 1.05:
         return False
-    if scanned_image.width < 80 or scanned_image.height < 45:
+    if max(scanned_image.width, scanned_image.height) < 80 or min(scanned_image.width, scanned_image.height) < 45:
         return False
     ratio = scanned_image.width / scanned_image.height
     return 1.2 <= ratio <= 2.6 or 1 / 2.6 <= ratio <= 1 / 1.2
@@ -97,7 +118,7 @@ def _reasonable_card(points, scanned_image: Image.Image, original_image: Image.I
 def scan_one(name: str, raw: bytes) -> dict:
     """이미지 한 장을 독립적으로 스캔한다. 실패한 이미지만 수동 대상으로 남긴다."""
     clean_name = normalize_name(name)
-    digest = hashlib.sha256(clean_name.encode("utf-8") + b"\0" + raw).hexdigest()[:24]
+    digest = record_id(clean_name, raw)
     record = {
         "id": digest,
         "name": clean_name,
@@ -119,6 +140,15 @@ def scan_one(name: str, raw: bytes) -> dict:
 
     try:
         image = image_from_bytes(raw)
+    except Exception as error:
+        record["status"] = "error"
+        record["message"] = (str(error) if isinstance(error, ValueError)
+                             else "이미지 파일을 열지 못했습니다.")
+        # 비정상 파일은 원본 미리보기도 사용할 수 없다.
+        record["original_bytes"] = b""
+        return record
+
+    try:
         result, corners = scan_auto_image(image)
         if result is None:
             record["message"] = "자동으로 명함 모서리를 찾지 못했습니다. 네 모서리를 직접 지정해 주세요."
@@ -130,21 +160,15 @@ def scan_one(name: str, raw: bytes) -> dict:
                 record["message"] = "자동 원근 보정 완료 (잘린 영역이 정확한지 확인하세요)."
             else:
                 record["message"] = "명함으로 보기 어려운 사각형이 검출됐습니다. 수동 보정이 필요합니다."
-    except (ValueError, cv2.error) as error:
-        # 업로드 자체가 열리지 않는 파일과 자동 탐지 실패를 구분한다.
-        try:
-            image_from_bytes(raw)
-        except ValueError as invalid:
-            record["status"] = "error"
-            record["message"] = str(invalid)
-        else:
-            record["message"] = f"자동 스캔 실패: {error}. 수동으로 보정할 수 있습니다."
+    except Exception as error:
+        # 한 장의 자동 탐지/인코딩 실패는 나머지 파일 처리에 영향을 주지 않는다.
+        record["message"] = f"자동 스캔 실패 ({type(error).__name__}). 수동으로 보정할 수 있습니다."
 
     return record
 
 
-def process_folder(images: list[tuple[str, bytes]], on_progress=None) -> list[dict]:
-    """폴더 전체를 일괄 자동 스캔한다. UI 재실행과 파일 업로드는 호출자가 관리한다."""
+def process_folder(images: list[tuple[str, bytes]], on_progress=None, previous_records=None) -> list[dict]:
+    """이미 처리한 동일 파일은 보정본과 수정값을 재사용한다."""
     if not images:
         return []
     if len(images) > MAX_FILES:
@@ -152,20 +176,27 @@ def process_folder(images: list[tuple[str, bytes]], on_progress=None) -> list[di
     if sum(len(data) for _, data in images) > MAX_TOTAL_BYTES:
         raise ValueError("폴더 전체 용량은 120MB 이하로 제한됩니다.")
 
-    # 동일한 상대 경로/파일 내용은 추가 업로드되어도 중복 처리하지 않는다.
+    previous = {item["id"]: item for item in (previous_records or [])}
     seen = set()
-    records = []
+    selected = []
     for name, data in sorted(images, key=lambda item: normalize_name(item[0]).casefold()):
         clean_name = normalize_name(name)
         if PurePosixPath(clean_name).suffix.lower() not in ALLOWED_EXTENSIONS:
             continue
-        key = (clean_name, hashlib.sha256(data).digest())
+        key = record_id(clean_name, data)
         if key in seen:
             continue
         seen.add(key)
-        records.append(scan_one(clean_name, data))
+        selected.append((key, clean_name, data))
+
+    records = []
+    for key, name, data in selected:
+        record = previous.get(key)
+        if record is None:
+            record = scan_one(name, data)
+        records.append(record)
         if on_progress:
-            on_progress(len(records), len(images), clean_name)
+            on_progress(len(records), len(selected), name)
     return records
 
 
@@ -176,8 +207,11 @@ def apply_manual_scan(record: dict, points: list[tuple[int, int]]) -> None:
     if len(points) != 4:
         raise ValueError("네 모서리를 모두 선택해야 합니다.")
     image = image_from_bytes(record["original_bytes"])
-    result = scan_manual_image(image, points)
-    output_bytes, _ = _normalize_scan_result(result)
+    try:
+        result = scan_manual_image(image, points)
+        output_bytes, _ = _normalize_scan_result(result)
+    except (OSError, cv2.error, RuntimeError) as error:
+        raise ValueError("수동 보정 이미지를 만들지 못했습니다. 모서리를 다시 확인하세요.") from error
     record["scanned_bytes"] = output_bytes
     record["status"] = "manual"
     record["message"] = "수동 원근 보정 완료"

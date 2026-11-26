@@ -8,6 +8,7 @@ original image coordinates for the existing Streamlit preview.
 import hashlib
 import io
 import re
+from time import monotonic
 from dataclasses import asdict, replace
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -19,6 +20,7 @@ from backend.ocr.service import OCRLine, recognize_text
 
 MAX_IMAGE_PIXELS = 12_000_000
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
+DEFAULT_OCR_TIMEOUT = 60.0
 
 
 def _restore_coordinates(line: OCRLine, scale: float) -> OCRLine:
@@ -76,8 +78,22 @@ def _recognize_variant(candidate, languages: str, psm: int, timeout: int) -> lis
     return [_restore_coordinates(line, candidate.scale) for line in result.lines]
 
 
-def run_ocr_pipeline(image_bytes: bytes, languages: str = "kor+eng", psm: int = 11) -> dict:
-    """Read an image, enhance OCR candidates, then classify contact fields."""
+def run_ocr_pipeline(image_bytes: bytes, languages: str = "kor+eng", psm: int = 11, *,
+                     timeout: float = DEFAULT_OCR_TIMEOUT) -> dict:
+    """Read an image, enhance OCR candidates, then classify contact fields.
+
+    timeout은 이미지 한 장의 전체 OCR 예산이다. 보조 인식이 시간 초과되어도
+    이미 얻은 결과는 유지한다.
+    """
+    if not isinstance(timeout, (int, float)) or not 1 <= timeout <= 180:
+        raise ValueError("OCR 처리 제한 시간은 1~180초로 지정하세요.")
+    deadline = monotonic() + timeout
+
+    def remaining(max_seconds):
+        seconds = min(max_seconds, deadline - monotonic())
+        if seconds < 0.5:
+            raise RuntimeError("OCR 처리 제한 시간에 도달했습니다.")
+        return seconds
     if not isinstance(image_bytes, bytes) or not image_bytes:
         raise ValueError("OCR을 실행할 명함 이미지가 없습니다.")
     if len(image_bytes) > MAX_IMAGE_BYTES:
@@ -94,15 +110,22 @@ def run_ocr_pipeline(image_bytes: bytes, languages: str = "kor+eng", psm: int = 
     variants = prepare_pre_scan_images(image)
     original, contrast, binary = variants
 
-    # If the installed OCR engine is unavailable, retain the original error.
-    lines = _recognize_variant(original, languages, psm, timeout=45)
+    # 첫 번째 인식에 전체 예산을 소진하지 않도록 하고, 보조 인식 기회를 남긴다.
     examined = ["original"]
     errors = []
+    try:
+        lines = _recognize_variant(original, languages, psm, timeout=remaining(min(45, timeout * 0.65)))
+    except RuntimeError as error:
+        # 설치/언어 모델 오류는 반복할 이유가 없다. 시간 초과인 경우만 보조 시도.
+        if not any(word in str(error).casefold() for word in ("timeout", "시간", "timed out")):
+            raise
+        errors.append(str(error))
+        lines = []
 
     # A single-block pass can recover large titles missed by sparse-text mode.
     try:
         contrast_psm = 6 if psm == 11 else psm
-        enhanced_lines = _recognize_variant(contrast, languages, contrast_psm, timeout=30)
+        enhanced_lines = _recognize_variant(contrast, languages, contrast_psm, timeout=remaining(30))
         lines = _merge_lines(lines, enhanced_lines)
         examined.append("contrast")
     except RuntimeError as error:
@@ -112,7 +135,7 @@ def run_ocr_pipeline(image_bytes: bytes, languages: str = "kor+eng", psm: int = 
     # Thresholding is intentionally a fallback: it may destroy thin strokes.
     if len(lines) < 2:
         try:
-            threshold_lines = _recognize_variant(binary, languages, psm, timeout=30)
+            threshold_lines = _recognize_variant(binary, languages, psm, timeout=remaining(30))
             lines = _merge_lines(lines, threshold_lines)
             examined.append("binary")
         except RuntimeError as error:

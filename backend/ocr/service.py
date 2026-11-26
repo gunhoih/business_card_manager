@@ -6,6 +6,8 @@ Linux(Streamlit Cloud)에서는 시스템 패키지로 설치한 tesseract를 �
 
 from collections import defaultdict
 from dataclasses import dataclass
+from threading import RLock
+from time import monotonic
 import os
 from pathlib import Path
 import re
@@ -20,6 +22,13 @@ from pytesseract import Output, TesseractError, TesseractNotFoundError
 ROOT = Path(__file__).resolve().parents[2]
 LOCAL_TESSDATA = ROOT / "data" / "ocr" / "tessdata"
 SUPPORTED_LANGUAGES = {"eng", "kor", "chi_tra", "chi_sim"}
+_ENGINE_LOCK = RLock()
+_ENGINE_CACHE = {}
+_LANGUAGE_CACHE = {}
+CACHE_SECONDS = 30
+# 사용자별 데이터는 캐싱하지 않는다. 서버의 엔진 경로와 설치 언어만 캐싱한다.
+_INITIAL_TESSDATA_PREFIX = os.environ.get("TESSDATA_PREFIX")
+_MANAGED_TESSDATA_PREFIX = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +149,20 @@ def _windows_candidate_paths(environ=None):
 
 
 def _engine_version(command):
+    """정상 확인된 실행 파일의 버전만 짧게 재사용한다."""
+    key = str(command)
+    with _ENGINE_LOCK:
+        cached = _ENGINE_CACHE.get(key)
+        if cached and monotonic() - cached[0] < CACHE_SECONDS:
+            return cached[1]
+        version = _read_engine_version(command)
+        if version:
+            _ENGINE_CACHE.clear()
+            _ENGINE_CACHE[key] = (monotonic(), version)
+        return version
+
+
+def _read_engine_version(command):
     """실행 파일 존재 여부만 보지 않고 실제로 실행되는지 확인한다."""
     try:
         result = subprocess.run(
@@ -203,6 +226,7 @@ def resolve_tessdata_dir():
 
 
 def _configure_engine():
+    global _MANAGED_TESSDATA_PREFIX
     command = resolve_tesseract_cmd()
     if not command:
         raise RuntimeError(
@@ -219,16 +243,41 @@ def _configure_engine():
         # --tessdata-dir "..." 형태를 넘기면 따옴표가 실제 경로에 남을 수 있다.
         # 모델 폴더를 Tesseract 공식 환경 변수로 전달하면 공백 경로도 안전하다.
         os.environ["TESSDATA_PREFIX"] = str(tessdata)
+        _MANAGED_TESSDATA_PREFIX = str(tessdata)
+    elif _MANAGED_TESSDATA_PREFIX is not None:
+        # 이전에 앱이 적용한 프로젝트 경로를 시스템 모델로 돌아갈 때 제거한다.
+        if os.environ.get("TESSDATA_PREFIX") == _MANAGED_TESSDATA_PREFIX:
+            if _INITIAL_TESSDATA_PREFIX is None:
+                os.environ.pop("TESSDATA_PREFIX", None)
+            else:
+                os.environ["TESSDATA_PREFIX"] = _INITIAL_TESSDATA_PREFIX
+        _MANAGED_TESSDATA_PREFIX = None
     return ""
 
 
 def available_languages():
-    """선택된 모델 위치에서 로드 가능한 언어 목록."""
-    config = _configure_engine()
-    try:
-        return sorted(pytesseract.get_languages(config=config))
-    except (TesseractNotFoundError, TesseractError, OSError) as error:
-        raise RuntimeError("Tesseract 언어 모델 목록을 읽지 못했습니다. 모델 폴더와 설정을 확인하세요.") from error
+    """설치된 언어 확인도 시간 제한을 두고 성공한 결과만 짧게 재사용한다."""
+    with _ENGINE_LOCK:
+        _configure_engine()
+        command = pytesseract.pytesseract.tesseract_cmd
+        key = (command, os.environ.get("TESSDATA_PREFIX", ""))
+        cached = _LANGUAGE_CACHE.get(key)
+        if cached and monotonic() - cached[0] < CACHE_SECONDS:
+            return list(cached[1])
+        try:
+            result = subprocess.run([command, "--list-langs"], capture_output=True,
+                                    text=True, errors="replace", timeout=8, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError("Tesseract 언어 모델 목록을 읽지 못했습니다. 설치와 경로를 확인하세요.") from error
+        if result.returncode != 0:
+            raise RuntimeError("Tesseract 언어 모델 목록을 읽지 못했습니다. 설치와 경로를 확인하세요.")
+        languages = sorted({line.strip() for line in result.stdout.splitlines()
+                            if re.fullmatch(r"[A-Za-z0-9_/]+", line.strip())})
+        if not languages:
+            raise RuntimeError("사용 가능한 OCR 언어 모델을 찾지 못했습니다.")
+        _LANGUAGE_CACHE.clear()
+        _LANGUAGE_CACHE[key] = (monotonic(), tuple(languages))
+        return languages
 
 
 def group_ocr_lines(data):
@@ -278,21 +327,25 @@ def recognize_text(image: Image.Image, languages="kor+eng", psm=11, timeout=45):
     if psm not in (3, 6, 11):
         raise ValueError("지원하지 않는 페이지 분석 모드입니다.")
 
-    config = _configure_engine()
+    deadline = monotonic() + timeout
     try:
-        installed = set(pytesseract.get_languages(config=config))
+        installed = set(available_languages())
+        config = ""
         missing = set(selected) - installed
         if missing:
             raise RuntimeError(
                 f"OCR 언어 모델이 부족합니다: {', '.join(sorted(missing))}. "
                 "Windows에서는 setup.cmd, Streamlit Cloud에서는 packages.txt를 확인하세요."
             )
+        remaining = deadline - monotonic()
+        if remaining < 0.5:
+            raise RuntimeError("OCR 처리 제한 시간에 도달했습니다.")
         data = pytesseract.image_to_data(
             image.convert("RGB"),
             lang=languages,
             config=f"--oem 1 --psm {psm} {config}".strip(),
             output_type=Output.DICT,
-            timeout=timeout,
+            timeout=remaining,
         )
     except (TesseractNotFoundError, TesseractError, RuntimeError, OSError) as error:
         if isinstance(error, RuntimeError):
