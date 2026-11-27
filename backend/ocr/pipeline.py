@@ -11,7 +11,7 @@ from backend.classifier.service import build_contact_fields, classify_lines
 from backend.image.pre_scan import prepare_pre_scan_images
 from backend.ocr.engine import select_engine
 from backend.ocr.english_review import review_english, review_warnings, _missing_fields
-from backend.ocr.rapid_service import recognize_rapid
+from backend.ocr.rapid_service import check_rapidocr, recognize_rapid
 from backend.ocr.name_recovery import join_name_fragments, review_names
 
 MAX_IMAGE_PIXELS = 12_000_000
@@ -105,8 +105,10 @@ def _primary_image(image):
 
 
 def _run_rapid_pipeline(image_bytes, languages, psm, timeout):
-    deadline = monotonic() + timeout
     image = _open_image(image_bytes)
+    # 모델 다운로드/무결성 검사는 명함별 OCR 시간 제한에 포함하지 않는다.
+    check_rapidocr()
+    deadline = monotonic() + timeout
     attempted, errors = [], []
 
     def read_variant(variant, label):

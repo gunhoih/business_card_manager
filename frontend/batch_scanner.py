@@ -95,7 +95,8 @@ def _run_ocr_batch(records, progress=None):
         return 0
 
     try:
-        check_ocr_ready("kor+eng")
+        with st.spinner("OCR 모델 확인 중 · 최초 실행 시 자동 다운로드합니다."):
+            check_ocr_ready("kor+eng")
     except (RuntimeError, OSError, ValueError) as error:
         for record in targets:
             record["ocr_error"] = str(error)

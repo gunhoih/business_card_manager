@@ -44,14 +44,17 @@ def show_ocr_page():
             psm_label = st.selectbox("글자 배치", ["흩어진 텍스트(명함 권장)", "하나의 텍스트 블록", "자동 페이지 분석"])
             psm = {"흩어진 텍스트(명함 권장)": 11, "하나의 텍스트 블록": 6, "자동 페이지 분석": 3}[psm_label]
         with st.expander("OCR 엔진 설치 상태"):
-            try:
-                st.success(check_ocr_ready(selected))
-            except RuntimeError as error:
-                st.warning(str(error))
+            st.caption("RapidOCR 모델은 최초 인식 또는 모델 확인 시 자동으로 준비됩니다.")
+            if st.button("OCR 모델 확인 및 준비", key="ocr_prepare_models"):
+                try:
+                    with st.spinner("OCR 모델 확인 중 · 필요한 파일을 자동 다운로드합니다."):
+                        st.success(check_ocr_ready(selected))
+                except (RuntimeError, ValueError) as error:
+                    st.warning(str(error))
 
         if st.button("명함 문자 인식", type="primary", width="stretch"):
             try:
-                with st.spinner("이미지에서 글자를 읽고 분류하고 있습니다..."):
+                with st.spinner("모델을 준비하고 글자를 인식하고 있습니다... (최초 실행 시 다운로드)"):
                     report = recognize_and_apply(
                         image_bytes, languages=LANGUAGE_OPTIONS[language_label], psm=psm
                     )

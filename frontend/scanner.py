@@ -236,13 +236,13 @@ def show_extraction_page():
             help="선택한 로컬 OCR과 텍스트 분류기를 순서대로 실행합니다.",
         ):
             try:
-                with st.spinner("명함 글자를 인식하고 항목을 분류하고 있습니다..."):
+                with st.spinner("모델을 준비하고 명함 글자를 인식하고 있습니다... (최초 실행 시 다운로드)"):
                     report = recognize_and_apply(
                         image_bytes, languages=language_options[selected_language], psm=11
                     )
             except (ValueError, RuntimeError) as error:
                 st.error(str(error))
-                st.info("기본 OCR 설치는 setup.cmd, 한자/Tesseract 설치는 setup.cmd -Tesseract를 확인하세요.")
+                st.info("모델 다운로드 오류는 인터넷 연결을 확인한 뒤 재시도하세요. 라이브러리 설치는 setup.cmd, 한자/Tesseract는 setup.cmd -Tesseract를 사용하세요.")
             else:
                 st.success(f"OCR {len(report['lines'])}줄 인식 및 자동 분류 완료")
                 st.caption("아래 필드를 확인하고, 상세 분류·수정은 왼쪽 '텍스트 분류' 메뉴에서 진행하세요.")
@@ -252,10 +252,11 @@ def show_extraction_page():
         with st.expander("로컬 OCR 설치 상태 확인"):
             if st.button("선택한 OCR 엔진·모델 확인", key="scanner_check_ocr"):
                 try:
-                    st.success(check_ocr_ready(language_options[selected_language]))
+                    with st.spinner("OCR 모델 확인 중 · 필요하면 자동 다운로드합니다."):
+                        st.success(check_ocr_ready(language_options[selected_language]))
                 except RuntimeError as error:
                     st.error(str(error))
-            st.caption("한국어·영어 모델은 setup.cmd로 설치합니다. 한자 요청은 기존 Tesseract를 사용합니다.")
+            st.caption("한국어·영어 모델은 최초 OCR 실행 시 자동으로 내려받습니다. 한자 요청은 기존 Tesseract를 사용합니다.")
         st.text_area("OCR 원문", key="scan_raw_text", height=140, placeholder="추후 OCR 원문을 보여줍니다. 직접 입력해도 됩니다.")
 
     with right:

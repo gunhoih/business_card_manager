@@ -8,15 +8,15 @@ from time import monotonic
 from PIL import Image
 import numpy as np
 
-from backend.ocr.model_store import MODEL_DIR, model_paths
+from backend.ocr.model_store import MODEL_DIR, ensure_models
 from backend.ocr.service import OCRLine, OCRResult
 
 _INFERENCE_LOCK = Lock()
 
 
-@lru_cache(maxsize=1)
 def _verified_paths():
-    return model_paths()
+    # 파일 검증 결과는 model_store에서 캐시하고, 누락되면 자동으로 복구한다.
+    return ensure_models()
 
 
 @lru_cache(maxsize=2)
@@ -81,7 +81,7 @@ def _load_engine(model="korean"):
 
 
 def check_rapidocr():
-    """파일 무결성/패키지 준비를 확인하고 실제 추론 엔진은 필요한 시점에만 로드한다."""
+    """라이브러리와 모델을 준비한다. 실제 추론 엔진은 필요한 시점에만 로드한다."""
     from importlib.util import find_spec
     if find_spec("rapidocr") is None or find_spec("onnxruntime") is None:
         raise RuntimeError("RapidOCR 또는 ONNX Runtime이 설치되지 않았습니다. uv sync를 실행하세요.")
@@ -129,8 +129,12 @@ def recognize_rapid(image, timeout=30, *, line_only=False, model="korean"):
         raise ValueError("Pillow 이미지가 필요합니다.")
     if model not in ("korean", "english") or (model == "english" and not line_only):
         raise ValueError("영어 보조 모델은 검출된 단일 줄에서만 사용할 수 있습니다.")
+    if timeout <= 0:
+        raise ValueError("OCR 처리 제한 시간은 양수여야 합니다.")
+    # 최초 다운로드는 추론 시간 예산과 분리한다. 이후에는 파일 검증 캐시를 사용한다.
+    check_rapidocr()
     deadline = monotonic() + float(timeout)
-    if timeout <= 0 or not _INFERENCE_LOCK.acquire(timeout=float(timeout)):
+    if not _INFERENCE_LOCK.acquire(timeout=float(timeout)):
         raise RuntimeError("OCR 실행 대기 시간이 초과되었습니다. 다시 시도해 주세요.")
     try:
         engine = _load_engine(model)

@@ -17,4 +17,4 @@ Model files are not modified by this project; only their local filenames differ.
 | english_recognition.onnx | en_PP-OCRv5_rec_mobile.onnx |
 | orientation.onnx | ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx |
 
-Run `uv run python scripts/setup_rapidocr.py --smoke-test` from the repository root to acquire and verify the four actual binaries. No placeholder models are supplied. The app uses only the verified local models and does not download model files during inference.
+The app downloads missing or invalid models on first OCR use, verifies their pinned SHA-256 values and caches them in this directory. The optional command `uv run python scripts/setup_rapidocr.py --smoke-test` prepares and tests the same files in advance. No placeholder model files are supplied or required in Git. The OCR inference itself remains local to the app server.
