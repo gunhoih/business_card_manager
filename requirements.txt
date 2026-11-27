@@ -9,3 +9,5 @@ pydantic>=2.10,<3
 streamlit-image-coordinates>=0.4.1,<0.5
 pytesseract>=0.3.13,<0.4
 python-dotenv>=1.0,<2
+rapidocr==3.10.0
+onnxruntime>=1.23.2,<2

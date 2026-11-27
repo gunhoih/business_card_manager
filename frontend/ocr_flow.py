@@ -22,6 +22,7 @@ def recognize_and_apply(image_bytes: bytes, languages: str = "kor+eng", psm: int
         "image_id": result["image_id"],
         "lines": result["lines"],
         "languages": result["languages"],
+        "engine": result.get("engine", "tesseract"),
         "psm": result["psm"],
         "source_text": result["text"],
         "revision": next_ocr_revision(),

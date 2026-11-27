@@ -1,4 +1,4 @@
-"""기존 스캔 결과를 Tesseract로 읽어 기존 연락처 입력 폼에 연결한다."""
+"""기존 스캔 결과를 로컬 OCR로 읽어 기존 연락처 입력 폼에 연결한다."""
 
 import hashlib
 import io
@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageOps
 import streamlit as st
 
 from backend.classifier.service import build_contact_fields, classify_text
-from backend.ocr.service import available_languages
+from backend.ocr.engine import check_ocr_ready, engine_label, select_engine
 from frontend.ocr_flow import recognize_and_apply
 from frontend.state import apply_auto_fields, next_ocr_revision
 
@@ -20,7 +20,7 @@ LANGUAGE_OPTIONS = {
 
 def show_ocr_page():
     st.title("OCR 텍스트 인식")
-    st.write("Tesseract를 사용해 명함 글자를 로컬에서 인식합니다. 이 단계에서는 AI API를 호출하지 않습니다.")
+    st.write("RapidOCR를 기본으로 명함 글자를 로컬에서 인식합니다. 이 단계에서는 AI API를 호출하지 않습니다.")
 
     image_bytes = st.session_state.scan_result_bytes or st.session_state.scan_image_bytes
     if not image_bytes:
@@ -37,17 +37,19 @@ def show_ocr_page():
 
     with right:
         language_label = st.radio("인식할 언어", list(LANGUAGE_OPTIONS), horizontal=False)
-        psm_label = st.selectbox("글자 배치", ["흩어진 텍스트(명함 권장)", "하나의 텍스트 블록", "자동 페이지 분석"])
-        psm = {"흩어진 텍스트(명함 권장)": 11, "하나의 텍스트 블록": 6, "자동 페이지 분석": 3}[psm_label]
+        selected = LANGUAGE_OPTIONS[language_label]
+        st.caption("사용 엔진: " + engine_label(selected))
+        psm = 11
+        if select_engine(selected) == "tesseract":
+            psm_label = st.selectbox("글자 배치", ["흩어진 텍스트(명함 권장)", "하나의 텍스트 블록", "자동 페이지 분석"])
+            psm = {"흩어진 텍스트(명함 권장)": 11, "하나의 텍스트 블록": 6, "자동 페이지 분석": 3}[psm_label]
         with st.expander("OCR 엔진 설치 상태"):
             try:
-                languages = available_languages()
-                st.success("Tesseract 실행 가능")
-                st.caption("설치된 언어: " + ", ".join(code for code in ("kor", "eng", "chi_tra", "chi_sim") if code in languages))
+                st.success(check_ocr_ready(selected))
             except RuntimeError as error:
                 st.warning(str(error))
 
-        if st.button("Tesseract로 문자 인식", type="primary", width="stretch"):
+        if st.button("명함 문자 인식", type="primary", width="stretch"):
             try:
                 with st.spinner("이미지에서 글자를 읽고 분류하고 있습니다..."):
                     report = recognize_and_apply(
@@ -93,6 +95,6 @@ def show_ocr_page():
             for line in lines:
                 x, y = line["left"], line["top"]
                 draw.rectangle((x, y, x + line["width"], y + line["height"]), outline="#f97316", width=2)
-            st.image(image_with_boxes, caption="Tesseract의 줄별 인식 영역", width="stretch")
+            st.image(image_with_boxes, caption="OCR 줄별 인식 영역", width="stretch")
         else:
             st.info("글자를 인식하지 못했습니다. 스캔 상태와 언어 설정을 확인해 주세요.")

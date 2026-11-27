@@ -6,6 +6,8 @@
 
 import re
 
+from .korean_names import is_role
+
 COMPANY = re.compile(
     r"㈜|\(주\)|주식회사|유한회사|(?:\bInc\.?\b)|(?:\bCorp\.?\b)|"
     r"(?:\bLLC\b)|(?:\bLtd\.?\b)|(?:\bCo\.?\s*,?\s*Ltd\.?\b)|"
@@ -42,7 +44,7 @@ ENGLISH_NAME = re.compile(r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2}")
 
 
 def looks_like_position(text: str) -> bool:
-    return bool(POSITION.search(text))
+    return is_role(text)
 
 
 def classify_context(text: str, near_position: bool, is_large_text: bool):
@@ -52,7 +54,7 @@ def classify_context(text: str, near_position: bool, is_large_text: bool):
         return "unknown", 0, ["비어 있는 텍스트"]
 
     # 직책을 먼저 확인한다. '개발팀장'은 부서가 아니라 직책이다.
-    if POSITION.search(value):
+    if is_role(value):
         return "position", 91, ["직책 키워드 발견(예: 대표, 팀장, 연구원, CEO)"]
 
     if COMPANY.search(value):

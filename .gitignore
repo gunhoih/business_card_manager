@@ -21,3 +21,10 @@ data/ocr/
 
 #샘플 이미지 폴더 제외
 SampleIMG
+
+# RapidOCR 모델은 Cloud 배포를 위해 Git에 포함
+!models/
+!models/ocr/
+!models/ocr/*.onnx
+models/ocr/*.part
+rapidocr_update/

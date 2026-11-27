@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Streamlit business card scanning and contact management"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "onnxruntime>=1.23.2,<2",
+    "rapidocr==3.10.0",
     "streamlit>=1.65,<2",
     "opencv-python-headless>=5.0,<6",
     "numpy>=2.0,<3",

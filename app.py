@@ -48,7 +48,7 @@ def main():
 
     st.sidebar.divider()
     contact_metric = st.sidebar.empty()
-    st.sidebar.caption("OpenCV 보정 · Tesseract OCR · 로컬 규칙 분류 · CSV 관리")
+    st.sidebar.caption("OpenCV 보정 · RapidOCR · 로컬 규칙 분류 · CSV 관리")
     st.sidebar.caption("AI 연락처 도우미만 OpenAI API 키가 필요합니다.")
     st.sidebar.caption("연락처는 웹 세션에만 보관됩니다. CSV로 내려받아 보관하세요.")
 

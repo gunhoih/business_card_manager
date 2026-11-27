@@ -22,8 +22,8 @@ BARE_DOMAIN = re.compile(
 )
 
 EMAIL_HINT = re.compile(r"e[\s-]?mail|메일", re.IGNORECASE)
-FAX_HINT = re.compile(r"fax|facsimile|팩스", re.IGNORECASE)
-PHONE_HINT = re.compile(r"tel(?:ephone)?|mobile|cell|phone|전화|휴대폰|핸드폰", re.IGNORECASE)
+FAX_HINT = re.compile(r"fax|facsimile|팩스|\bF\s*[:.]", re.IGNORECASE)
+PHONE_HINT = re.compile(r"tel(?:ephone)?|mobile|cell|phone|전화|휴대폰|핸드폰|\b[MT]\s*[:.]", re.IGNORECASE)
 
 # 한 줄에 두 개의 필드가 쓰인 경우만 구분자로 나눈다.
 # URL의 / 또는 e-mail의 . 은 보존해야 하므로 무조건 split('/') 하지 않는다.

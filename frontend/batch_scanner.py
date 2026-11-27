@@ -24,7 +24,7 @@ from backend.image.pre_scan.batch import (
     update_record_fields,
 )
 from backend.ocr.pipeline import run_ocr_pipeline
-from backend.ocr.service import available_languages
+from backend.ocr.engine import check_ocr_ready
 
 
 PAGE_SIZE = 6
@@ -95,10 +95,7 @@ def _run_ocr_batch(records, progress=None):
         return 0
 
     try:
-        languages = set(available_languages())
-        missing = {"kor", "eng"} - languages
-        if missing:
-            raise RuntimeError("OCR 언어 모델이 없습니다: " + ", ".join(sorted(missing)))
+        check_ocr_ready("kor+eng")
     except (RuntimeError, OSError, ValueError) as error:
         for record in targets:
             record["ocr_error"] = str(error)
@@ -343,6 +340,16 @@ def _show_dataset(record):
             st.rerun()
     elif not record.get("ocr"):
         st.caption("아직 인식된 내용이 없습니다. 직접 입력하거나 스캔을 보정해 주세요.")
+    else:
+        report = record["ocr"]
+        warnings = report.get("warnings", [])
+        if warnings and not record.get("reviewed"):
+            with st.expander(f"인식 확인 필요 ({len(warnings)}건)"):
+                for warning in warnings:
+                    st.warning(warning)
+        checks = report.get("english_checks", [])
+        if checks:
+            st.caption(f"영문·숫자 영역 {len(checks)}개 보조 인식 완료")
 
     review_key = f"batch_reviewed_{record['id']}"
     st.session_state.setdefault(review_key, record.get("reviewed", False))

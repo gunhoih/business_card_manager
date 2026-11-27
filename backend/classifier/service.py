@@ -12,7 +12,8 @@ from dataclasses import asdict, dataclass
 from statistics import median
 import re
 
-from .context_rules import POSITION, classify_context, looks_like_position
+from .context_rules import classify_context, looks_like_position
+from .korean_names import refine_name_candidates, split_name_role
 from .patterns import (
     BARE_DOMAIN, EMAIL, FIELD_SEPARATOR, PHONE, PURE_LABEL, WEBSITE,
     is_email_hint, is_fax_number,
@@ -41,7 +42,7 @@ EXPLICIT_LABELS = [
     (re.compile(r"^(?:직책|직급|title|position)\s*[:：]\s*(.+)$", re.IGNORECASE), "position"),
     (re.compile(r"^(?:주소|address|addr)\s*[:：]\s*(.+)$", re.IGNORECASE), "address"),
 ]
-NAME_AND_POSITION = re.compile(r"^([가-힣]{2,4})\s+(" + POSITION.pattern + r")$", re.IGNORECASE)
+# 이름과 직책의 분리는 korean_names에서 처리한다.
 
 
 @dataclass
@@ -81,10 +82,9 @@ def _split_line(text):
         part = part.strip()
         if not part:
             continue
-        joined = NAME_AND_POSITION.fullmatch(part)
+        joined = split_name_role(part)
         if joined:
-            yield joined.group(1)
-            yield joined.group(2)
+            yield from joined
         else:
             yield part
 
@@ -122,9 +122,10 @@ def _remove_found_text(part, patterns):
     remaining = " ".join("".join(letters).split())
     # 'E-mail: abc@x.com'에선 E-mail 라벨 자체를 별도 후보로 만들지 않는다.
     # 'Tel: ... Fax: ...'처럼 값만 빼고 라벨이 여러 개 남을 수 있다.
+    remaining_labels = re.sub(r"(?i)\b[EMTFW]\s*[:.]", "", remaining)
     labels_only = re.sub(
         r"(?i)\b(?:e[\s-]?mail|mail|fax|tel|telephone|mobile|cell|phone|web|website|url)\b|"
-        r"메일|팩스|전화|휴대폰|핸드폰|홈페이지|[:：-]", "", remaining
+        r"메일|팩스|전화|휴대폰|핸드폰|홈페이지|[:：-]", "", remaining_labels
     ).strip()
     if PURE_LABEL.fullmatch(remaining) or not labels_only or remaining in (":", "/", "-"):
         return ""
@@ -194,7 +195,7 @@ def classify_lines(lines):
             width=ocr.get("width"), height=ocr.get("height"),
         )
         rows.append(asdict(candidate))
-    return rows
+    return refine_name_candidates(rows)
 
 
 def classify_text(text):

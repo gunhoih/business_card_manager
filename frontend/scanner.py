@@ -7,7 +7,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 
 from backend.card_storage.schema import CONTACT_FIELDS
 from backend.image.scan_service import scan_auto_image, scan_manual_image
-from backend.ocr.service import available_languages
+from backend.ocr.engine import check_ocr_ready, engine_label
 from frontend.ocr_flow import recognize_and_apply
 from frontend.storage_ui import save_and_report
 from frontend.state import (
@@ -208,7 +208,7 @@ def show_scan_page():
 
 def show_extraction_page():
     st.subheader("2. 명함 정보 추출")
-    st.caption("로컬 Tesseract OCR로 문자를 인식하고 규칙 기반 분류기로 연락처 후보를 채웁니다. 외부 AI API는 호출하지 않습니다.")
+    st.caption("로컬 OCR(RapidOCR 기본)로 문자를 인식하고 규칙 기반 분류기로 연락처 후보를 채웁니다. 외부 AI API는 호출하지 않습니다.")
 
     left, right = st.columns([1, 1.3], gap="large")
 
@@ -227,12 +227,13 @@ def show_extraction_page():
         selected_language = st.selectbox(
             "로컬 OCR 인식 언어", list(language_options), key="scanner_ocr_language"
         )
+        st.caption("사용 엔진: " + engine_label(language_options[selected_language]))
         if st.button(
             "로컬 OCR 인식 + 자동 분류",
             type="primary",
             width="stretch",
             disabled=not image_bytes,
-            help="Tesseract OCR과 로컬 텍스트 분류기를 순서대로 실행합니다.",
+            help="선택한 로컬 OCR과 텍스트 분류기를 순서대로 실행합니다.",
         ):
             try:
                 with st.spinner("명함 글자를 인식하고 항목을 분류하고 있습니다..."):
@@ -241,7 +242,7 @@ def show_extraction_page():
                     )
             except (ValueError, RuntimeError) as error:
                 st.error(str(error))
-                st.info("Tesseract 설치 문제가 있다면 프로젝트 루트에서 setup.cmd를 실행해 주세요.")
+                st.info("기본 OCR 설치는 setup.cmd, 한자/Tesseract 설치는 setup.cmd -Tesseract를 확인하세요.")
             else:
                 st.success(f"OCR {len(report['lines'])}줄 인식 및 자동 분류 완료")
                 st.caption("아래 필드를 확인하고, 상세 분류·수정은 왼쪽 '텍스트 분류' 메뉴에서 진행하세요.")
@@ -249,15 +250,12 @@ def show_extraction_page():
                     st.warning(warning)
 
         with st.expander("로컬 OCR 설치 상태 확인"):
-            if st.button("Tesseract 엔진·언어 모델 확인", key="scanner_check_ocr"):
+            if st.button("선택한 OCR 엔진·모델 확인", key="scanner_check_ocr"):
                 try:
-                    installed = available_languages()
-                    st.success("Tesseract 실행 가능 · 언어 모델: " + ", ".join(
-                        lang for lang in ("eng", "kor", "chi_tra") if lang in installed
-                    ))
+                    st.success(check_ocr_ready(language_options[selected_language]))
                 except RuntimeError as error:
                     st.error(str(error))
-            st.caption("Windows에서는 setup.cmd로 엔진·kor/eng/chi_tra 모델을 설치/검증합니다.")
+            st.caption("한국어·영어 모델은 setup.cmd로 설치합니다. 한자 요청은 기존 Tesseract를 사용합니다.")
         st.text_area("OCR 원문", key="scan_raw_text", height=140, placeholder="추후 OCR 원문을 보여줍니다. 직접 입력해도 됩니다.")
 
     with right:
@@ -314,7 +312,7 @@ def show_extraction_page():
 def show_scanner():
     st.title("명함 인식")
     st.write("명함 이미지를 스캔한 뒤 로컬 OCR로 글자를 인식하고 연락처를 정리합니다.")
-    st.info("OpenCV 보정 → Tesseract 로컬 OCR → 자동 분류 → 수동 확인 및 CSV 저장")
+    st.info("OpenCV 보정 → RapidOCR 한국어·영어 인식 → 자동 분류 → 수동 확인 및 CSV 저장")
 
     scan_tab, extraction_tab = st.tabs(["📐 스캔 및 이미지 보정", "📝 텍스트 추출 및 정보 확인"])
     with scan_tab:
