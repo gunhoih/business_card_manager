@@ -2,7 +2,6 @@ import streamlit as st
 
 from backend.contact.csv_service import CONTACT_FIELDS
 from frontend.batch_scanner import show_batch_scanner
-from frontend.chat_page import show_chat_page
 from frontend.classifier_page import show_classifier_page
 from frontend.contacts import show_contacts
 from frontend.ocr_page import show_ocr_page
@@ -32,7 +31,7 @@ def main():
     st.sidebar.title("Business Card Manager")
     st.sidebar.caption("명함 이미지 → 연락처 데이터 추출")
 
-    # 핵심 기능을 먼저 보여주고 기존 단일 스캔/검증 도구는 별도 구역에 둔다.
+    # 챗봇은 연락처 관리 화면의 우측 패널에서 사용한다.
     pages = {
         "기본": [
             st.Page(show_batch_scanner, title="명함 데이터 추출", icon="📋", url_path="batch-scanner", default=True),
@@ -42,7 +41,6 @@ def main():
             st.Page(show_scanner, title="개별 명함 스캔", icon="📷", url_path="scanner"),
             st.Page(show_ocr_page, title="OCR 텍스트 인식", icon="🔤", url_path="ocr"),
             st.Page(show_classifier_page, title="텍스트 분류", icon="🏷️", url_path="classifier"),
-            st.Page(show_chat_page, title="명함 챗봇", icon="💬", url_path="chat"),
         ],
     }
 
@@ -51,8 +49,8 @@ def main():
     st.sidebar.divider()
     contact_metric = st.sidebar.empty()
     st.sidebar.caption("OpenCV 보정 · Tesseract OCR · 로컬 규칙 분류 · CSV 관리")
-    st.sidebar.caption("명함 챗봇만 OpenAI API 키가 필요합니다.")
-    st.sidebar.caption("연락처는 브라우저 세션에만 보관됩니다. CSV로 내려받아 보관하세요.")
+    st.sidebar.caption("AI 연락처 도우미만 OpenAI API 키가 필요합니다.")
+    st.sidebar.caption("연락처는 웹 세션에만 보관됩니다. CSV로 내려받아 보관하세요.")
 
     page.run()
     # 같은 실행 안에서 연락처가 추가/수정돼도 최신 건수를 표시한다.

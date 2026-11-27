@@ -1,8 +1,11 @@
+"""연락처 목록, 수정, CSV 관리와 AI 조회 패널을 한 화면에 배치한다."""
+
 import streamlit as st
 
 from backend.card_storage.schema import CONTACT_FIELDS, FIELD_LABELS
 from backend.card_storage.csv_service import export_contacts_csv, import_contacts_csv
 from backend.card_storage.service import save_contacts
+from frontend.chat_page import show_chat_panel
 from frontend.state import delete_contact, update_contact
 from frontend.storage_ui import show_save_result
 
@@ -56,7 +59,10 @@ def show_csv_tools():
 
 def show_contact_table():
     st.subheader("연락처 목록")
-    search = st.text_input("연락처 검색", placeholder="이름, 회사, 전화번호, 이메일로 검색")
+    search = st.text_input(
+        "연락처 검색", placeholder="이름, 회사, 전화번호, 이메일로 검색",
+        key="contacts_search",
+    )
     keyword = search.strip().casefold()
     contacts = st.session_state.contacts
 
@@ -81,8 +87,9 @@ def show_contact_table():
 
 
 def show_contact_editor(contacts):
+    """선택된 연락처 ID를 챗봇에 전달한다. 기존 저장 및 삭제 로직은 유지한다."""
     if not contacts:
-        return
+        return None
 
     st.subheader("선택한 연락처 수정")
     contact_ids = [item["id"] for item in contacts]
@@ -94,7 +101,15 @@ def show_contact_editor(contacts):
         company = item.get("company") or "소속 없음"
         return f"{name} · {company}"
 
-    selected_id = st.selectbox("연락처 선택", contact_ids, format_func=contact_label)
+    selection_key = "contacts_editor_selected"
+    # 기존 선택이 검색/삭제로 사라진 경우 유효한 항목으로 바꾼다.
+    if st.session_state.get(selection_key) not in contact_ids:
+        st.session_state[selection_key] = contact_ids[0]
+    selected_id = st.selectbox(
+        "연락처 선택", contact_ids, format_func=contact_label, key=selection_key,
+    )
+    if selected_id not in contact_map:
+        return None
     selected = contact_map[selected_id]
 
     with st.form(f"edit_contact_{selected_id}"):
@@ -140,13 +155,11 @@ def show_contact_editor(contacts):
         if st.button("선택한 연락처 삭제", disabled=not confirmed, key=f"delete_{selected_id}"):
             delete_contact(selected_id)
             st.rerun()
+    return selected_id
 
 
-def show_contacts():
-    st.title("연락처 관리")
-    st.write("인식하거나 직접 입력한 명함 정보를 확인하고 CSV로 저장할 수 있습니다.")
-    st.warning("현재 연락처는 서버에 영구 저장되지 않습니다. 페이지를 떠나기 전에 CSV 파일을 다운로드하세요.", icon="⚠️")
-
+def _show_contact_workspace():
+    """목록, 편집 및 CSV 기능을 표시하고 현재 조회 맥락을 반환한다."""
     result = st.session_state.pop("contacts_save_result", None)
     if result is not None:
         show_save_result(result, ui=st)
@@ -162,6 +175,41 @@ def show_contacts():
     col2.metric("이메일이 있는 연락처", with_email)
     col3.metric("회사·소속", len(companies))
 
-    show_csv_tools()
     contacts = show_contact_table()
-    show_contact_editor(contacts)
+    selected_id = show_contact_editor(contacts)
+    with st.expander("CSV 저장 및 가져오기", expanded=not total):
+        show_csv_tools()
+    return contacts, selected_id
+
+
+def _toggle_chat():
+    st.session_state.contacts_chat_open = not st.session_state.get("contacts_chat_open", False)
+
+
+def show_contacts():
+    if "contacts_chat_open" not in st.session_state:
+        st.session_state.contacts_chat_open = False
+    chat_open = st.session_state.contacts_chat_open
+
+    title_col, button_col = st.columns([3, 1], vertical_alignment="center")
+    with title_col:
+        st.title("연락처 관리")
+    with button_col:
+        label = "AI 도우미 닫기" if chat_open else "AI 도우미 열기"
+        st.button(
+            label, key="contacts_chat_toggle", on_click=_toggle_chat,
+            type="secondary" if chat_open else "primary", width="stretch",
+            icon=":material/chat:",
+        )
+
+    st.caption("인식하거나 직접 입력한 명함을 관리하고, AI 도우미에게 현재 연락처를 질문할 수 있습니다.")
+    st.warning("연락처는 현재 웹 세션에만 보관됩니다. 종료 전에 CSV 파일을 다운로드하세요.", icon="⚠️")
+
+    if chat_open:
+        left, right = st.columns([65, 35], gap="large")
+        with left:
+            visible_contacts, selected_id = _show_contact_workspace()
+        with right:
+            show_chat_panel(visible_contacts, selected_id)
+    else:
+        _show_contact_workspace()
