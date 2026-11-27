@@ -13,7 +13,7 @@ from statistics import median
 import re
 
 from .context_rules import classify_context, looks_like_position
-from .korean_names import refine_name_candidates, split_name_role
+from .korean_names import refine_name_candidates, split_name_context
 from .patterns import (
     BARE_DOMAIN, EMAIL, FIELD_SEPARATOR, PHONE, PURE_LABEL, WEBSITE,
     is_email_hint, is_fax_number,
@@ -78,15 +78,15 @@ def _read_line(line):
 
 def _split_line(text):
     """필드 구분 기호 및 '홍길동 대표'처럼 확실한 짧은 결합 형태를 분리."""
+    # 글자 사이에 점/가운뎃점이 인쇄된 짧은 이름만 연결한다.
+    if re.fullmatch(r"[가-힣](?:\s*[·ㆍ.]\s*[가-힣]){1,3}", text.strip()):
+        yield re.sub(r"[\s·ㆍ.]", "", text)
+        return
     for part in FIELD_SEPARATOR.split(text):
         part = part.strip()
         if not part:
             continue
-        joined = split_name_role(part)
-        if joined:
-            yield from joined
-        else:
-            yield part
+        yield from split_name_context(part)
 
 
 def _find_patterns(part):
@@ -129,6 +129,12 @@ def _remove_found_text(part, patterns):
     ).strip()
     if PURE_LABEL.fullmatch(remaining) or not labels_only or remaining in (":", "/", "-"):
         return ""
+    if patterns:
+        # 값과 같은 줄에 남은 연락처 라벨만 제거한다. 다른 필드의 라벨은 건드리지 않는다.
+        remaining = re.sub(r"(?i)\b(?:e[\s-]?mail|mail|fax|tel|telephone|mobile|cell|phone|web|website|url)\s*[:：.-]?\s*", " ", remaining)
+        remaining = re.sub(r"(?i)\b[EMTFW]\s*[:.]", " ", remaining)
+        remaining = re.sub(r"(?:이메일|메일|팩스|전화|휴대폰|핸드폰|홈페이지)\s*[:：-]?", " ", remaining)
+        remaining = " ".join(remaining.split()).strip(" ,;:：")
     return remaining
 
 
@@ -146,8 +152,10 @@ def _prepare_parts(lines):
                                "fixed_type": kind, "score": score, "reason": reason, "ocr": original})
             remaining = _remove_found_text(part, patterns)
             if remaining:
-                pieces.append({"line_index": line_index, "source": text, "part": remaining,
-                               "fixed_type": None, "score": 0, "reason": "", "ocr": original})
+                # 연락처 값 제거 후 이름/직책이 남아 있다면 한 번 더 분리한다.
+                for value in split_name_context(remaining):
+                    pieces.append({"line_index": line_index, "source": text, "part": value,
+                                   "fixed_type": None, "score": 0, "reason": "", "ocr": original})
     return pieces
 
 
@@ -233,4 +241,6 @@ def build_contact_fields(rows):
     fields = {}
     for kind, row in chosen.items():
         fields[kind] = str(row["value"]).strip()
+        if kind == "name" and row.get("name_status") == "suggested" and not row.get("manual"):
+            warnings.append("이름 자동 제안: " + fields[kind] + " · 원본에서 확인해 주세요.")
     return fields, warnings

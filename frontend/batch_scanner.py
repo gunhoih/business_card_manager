@@ -43,7 +43,7 @@ STATUS_LABELS = {
 def _clear_editor_keys():
     """다른 폴더를 불러올 때 이전 표의 수정값이 새 결과로 섞이지 않게 한다."""
     prefixes = ("batch_dataset_", "batch_reviewed_", "batch_page_", "batch_points_",
-                "batch_manual_", "batch_cancel_", "batch_retry_")
+                "batch_manual_", "batch_cancel_", "batch_retry_", "batch_name_")
     for key in list(st.session_state):
         if key.startswith(prefixes):
             st.session_state.pop(key, None)
@@ -347,9 +347,41 @@ def _show_dataset(record):
             with st.expander(f"인식 확인 필요 ({len(warnings)}건)"):
                 for warning in warnings:
                     st.warning(warning)
+        # 불확실한 이름은 표를 직접 고치거나 실제 OCR 후보 중 하나를 선택한다.
+        name_rows = sorted((row for row in report.get("candidates", []) if row.get("name_rank")),
+                           key=lambda row: row["name_rank"])
+        chosen = next((row for row in name_rows if row.get("selected_type") == "name"), None)
+        names = [row.get("name_candidate") for row in name_rows if row.get("name_candidate")]
+        names += [item["alternate"] for item in report.get("name_checks", [])
+                  if item.get("status") == "review" and item.get("alternate")]
+        names = list(dict.fromkeys(names))[:3]
+        needs_name = (not record.get("fields", {}).get("name") or
+                      (chosen and chosen.get("name_status") == "suggested") or
+                      any(item.get("status") == "review" for item in report.get("name_checks", [])))
+        if names and needs_name and not record.get("reviewed") and "name" not in record.get("manual_fields", []):
+            st.caption("이름 확인 필요 · 원본에서 판독한 후보")
+            options = ["선택하지 않음", *names]
+            name = st.selectbox("이름 후보", options,
+                                key=f"batch_name_choice_{record['id']}_{revision}")
+            if st.button("선택한 이름 반영", disabled=name == options[0],
+                         key=f"batch_name_apply_{record['id']}_{revision}"):
+                values = dict(record.get("fields", {}))
+                values["name"] = name
+                update_record_fields(record, values)
+                # 같은 자동 제안값을 승인해도 수동 확인값으로 기록한다.
+                record["manual_fields"] = sorted(set(record.get("manual_fields", [])) | {"name"})
+                record["field_revision"] = revision + 1
+                record["reviewed"] = False
+                st.session_state[f"batch_reviewed_{record['id']}"] = False
+                st.rerun()
         checks = report.get("english_checks", [])
         if checks:
             st.caption(f"영문·숫자 영역 {len(checks)}개 보조 인식 완료")
+        if needs_name and record.get("scanned_bytes") and "name" not in record.get("manual_fields", []):
+            if st.button("이 명함 다시 인식", key=f"batch_retry_name_{record['id']}"):
+                _run_ocr_one(record)
+                st.session_state[f"batch_reviewed_{record['id']}"] = False
+                st.rerun()
 
     review_key = f"batch_reviewed_{record['id']}"
     st.session_state.setdefault(review_key, record.get("reviewed", False))
